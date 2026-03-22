@@ -1,0 +1,106 @@
+configuration:
+  plex_server_ip:
+    name: Plex Server IP
+    description: The local IP address of your Plex Media Server that the proxy forwards traffic to.
+  target_mac:
+    name: Target MAC Address
+    description: The MAC address of your Plex server's network adapter, used to send Wake-on-LAN packets. Format AA:BB:CC:DD:EE:FF.
+  broadcast:
+    name: Broadcast Address
+    description: Your subnet's broadcast address for sending WoL packets. Usually your network address with 255 as the last number (e.g. 192.168.1.255).
+  listen_port:
+    name: Listen Port
+    description: The port the proxy listens on for incoming connections. Should match your router's port forward destination. Default 32400.
+  plex_server_port:
+    name: Plex Server Port
+    description: The port your Plex Media Server is running on. Only change this if you modified it in Plex settings. Default 32400.
+  rate_limit_seconds:
+    name: WoL Rate Limit (seconds)
+    description: Minimum time in seconds between sending WoL packets. Prevents flooding your server with repeated wake requests. Default 30.
+  wake_timeout_seconds:
+    name: Wake Timeout (seconds)
+    description: How long to wait for the server to come online after sending WoL. If the server doesn't respond in time, the connection is dropped and you receive a notification. Default 120.
+  flood_threshold:
+    name: Flood Alert Threshold
+    description: Number of connections within the flood window that triggers an alert. The Plex server's own IP and local/private IPs are automatically excluded from counting. Cannot be set below 5. Default 20.
+  flood_window_seconds:
+    name: Flood Alert Window (seconds)
+    description: The time window in seconds used for counting connections toward the flood threshold. Default 60.
+  enable_user_tracking:
+    name: User Tracking
+    description: Identifies which Plex user triggered a wake by querying the server's active sessions after it comes up. Requires a Plex admin token. User info appears in logs, notifications, and HA sensors.
+  plex_admin_token:
+    name: Plex Admin Token
+    description: "Your Plex admin authentication token. Required for user tracking. Find it at: Settings → Troubleshooting → Plex Media Server, or in the URL bar when browsing your server (the X-Plex-Token parameter). This token is sent over HTTPS only and never leaves your local network."
+  enable_smart_wol:
+    name: Smart WoL (Burst Detection)
+    description: Only sends WoL when multiple connections arrive in a short window, indicating someone actively opening the Plex app. Single background polls from idle apps are ignored, keeping the server asleep. Disable if your server isn't waking when expected.
+  smart_wol_burst_count:
+    name: Smart WoL Burst Count
+    description: Number of connections required within the burst window to trigger WoL. A Plex app cold open typically generates 5-10+ rapid connections. Default 3.
+  smart_wol_burst_window:
+    name: Smart WoL Burst Window (seconds)
+    description: Time window in seconds for counting burst connections. A cold app open generates its burst within a few seconds. Default 15.
+  enable_geoip:
+    name: GeoIP Blocking
+    description: Drops connections from countries not in the allowed list. Local and private IPs are always allowed regardless. Can be toggled live from the HA dashboard.
+  allowed_countries:
+    name: Allowed Countries
+    description: "Comma-separated ISO 3166-1 alpha-2 country codes (e.g. US or US,CA,GB). Full list: https://en.wikipedia.org/wiki/ISO_3166-1_alpha-2#Officially_assigned_code_elements"
+  enable_ip_allowlist:
+    name: IP Allowlist
+    description: When enabled, only connections from the listed IPs are accepted. All other IPs are dropped.
+  ip_allowlist:
+    name: Allowed IPs
+    description: Comma-separated list of IP addresses to allow (e.g. 192.168.1.10,203.0.113.50).
+  enable_ip_blocklist:
+    name: IP Blocklist
+    description: Hard-blocks the listed IPs. Connections are dropped entirely with no proxy and no WoL. Checked before all other filters. Use for known scanners or abusive clients.
+  ip_blocklist:
+    name: Blocked IPs
+    description: Comma-separated list of IP addresses to block (e.g. 203.0.113.99).
+  enable_nowake_list:
+    name: No-Wake List
+    description: Listed IPs are proxied normally when the server is already up, but their connections are dropped instead of triggering WoL when the server is down. Use for plex.tv health-check IPs and similar services that shouldn't wake your server.
+  nowake_list:
+    name: No-Wake IPs
+    description: Comma-separated list of IPs that should not trigger WoL (e.g. 44.207.218.81).
+  enable_sleep_trigger:
+    name: Sleep Trigger
+    description: Puts the Plex server to sleep via SSH after the configured idle time or max awake time. Requires OpenSSH Server installed on the Plex server. Can be toggled live from the HA dashboard.
+  sleep_idle_minutes:
+    name: Sleep Idle Timeout (minutes)
+    description: Minutes of no proxy activity before the server is put to sleep. Set to 0 to disable idle-based sleep.
+  max_awake_minutes:
+    name: Max Awake Time (minutes)
+    description: Force the server to sleep after this many minutes regardless of activity. Prevents clients with open Plex apps from keeping the server awake indefinitely. Set to 0 to disable.
+  server_ssh_user:
+    name: Server SSH Username
+    description: Your Windows username on the Plex server for SSH connections. An SSH key is auto-generated on first start — check the add-on log for the public key to add to your server.
+  server_ssh_port:
+    name: Server SSH Port
+    description: The SSH port on your Plex server. Default 22.
+  enable_health_check:
+    name: Health Check Endpoint
+    description: Enables a JSON status endpoint that reports server status, uptime, connection count, unique IPs, and Plex server reachability.
+  health_check_port:
+    name: Health Check Port
+    description: Port for the health check endpoint. Access at http://YOUR_HA_IP:PORT. Default 32401.
+  enable_ha_sensors:
+    name: HA Sensors
+    description: Creates Home Assistant sensor entities for server status, last wake time, connection count, and unique IPs today. Can be used in automations and dashboards.
+  enable_dashboard_toggles:
+    name: Dashboard Toggles
+    description: Creates input_boolean entities for live control of WoL, GeoIP, quiet mode, and sleep trigger from the HA dashboard. Changes apply within 5 seconds, no restart needed.
+  enable_file_logging:
+    name: File Logging
+    description: Writes logs to a file with daily rotation. Old log files are automatically deleted after the retention period.
+  log_retention_days:
+    name: Log Retention (days)
+    description: Number of days to keep log files before automatic deletion. Default 14.
+  enable_quiet_mode:
+    name: Quiet Mode
+    description: Hides routine "Server already up" and "Connection closed" log messages. WoL events, errors, timeouts, and alerts are always shown. Can be toggled live from the HA dashboard.
+  user_friendly_names:
+    name: User Friendly Names
+    description: "Map Plex usernames to display names shown in logs, notifications, and sensors. Format: plexuser1:John,plexuser2:Jane. The Plex username is what appears in your Plex account settings under Account. Requires user tracking to be enabled."
