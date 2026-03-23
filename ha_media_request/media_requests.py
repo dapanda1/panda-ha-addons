@@ -38,6 +38,8 @@ log = logging.getLogger("media_requests")
 # ── Paths ────────────────────────────────────────────────────────────
 OPTIONS_PATH = "/data/options.json"
 LOG_FILE = "/data/media_request_log.txt"
+TRACKER_FILE = "/data/request_tracker.json"
+IGNORED_SEEN_FILE = "/data/ignored_seen.json"
 HA_TOKEN_PATH = os.environ.get("SUPERVISOR_TOKEN", "")
 
 # ── Config ───────────────────────────────────────────────────────────
@@ -264,15 +266,17 @@ def send_mobile_notification(config, title, message):
         log.error("Mobile notification failed: %s", body)
 
 
-def send_reply(config, to_addr, subject, items, approved=True):
-    """Send an SMTP reply to the sender. Approved senders get a confirmation, others get rejection."""
+def send_reply(config, to_addr, subject, items, approved=True, custom_body=None):
+    """Send an SMTP reply. Supports confirmation, rejection, and custom messages."""
     smtp_server = config.get("smtp_server", "smtp.gmail.com")
     smtp_port = config.get("smtp_port", 587)
     username = config["imap_username"]
     password = config["imap_password"]
     from_addr = config.get("reply_from", username) or username
 
-    if approved:
+    if custom_body:
+        body_lines = [custom_body]
+    elif approved:
         body_lines = [
             "Your media request has been received.",
             f"{len(items)} item(s) added to the list:",
@@ -321,6 +325,144 @@ def append_log(friendly_name, items):
     log.info("Logged %d item(s) for %s", len(items), friendly_name)
 
 
+# ── Request tracker (maps todo items → sender email) ────────────────
+def load_tracker():
+    """Load the request tracker from disk."""
+    if os.path.exists(TRACKER_FILE):
+        try:
+            with open(TRACKER_FILE, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            log.warning("Tracker file corrupt, starting fresh")
+    return {}
+
+
+def save_tracker(tracker):
+    """Save the request tracker to disk."""
+    with open(TRACKER_FILE, "w") as f:
+        json.dump(tracker, f, indent=2)
+
+
+def track_items(formatted_items, sender_email):
+    """Record which sender submitted each todo item."""
+    tracker = load_tracker()
+    for item in formatted_items:
+        tracker[item] = sender_email
+    save_tracker(tracker)
+    log.info("Tracked %d item(s) for %s", len(formatted_items), sender_email)
+
+
+# ── Ignored sender tracker (notify once, then silent delete) ─────────
+def load_ignored_seen():
+    """Load the set of ignored senders we've already notified about."""
+    if os.path.exists(IGNORED_SEEN_FILE):
+        try:
+            with open(IGNORED_SEEN_FILE, "r") as f:
+                return set(json.load(f))
+        except (json.JSONDecodeError, IOError):
+            pass
+    return set()
+
+
+def save_ignored_seen(seen):
+    """Save the set of ignored senders we've already notified about."""
+    with open(IGNORED_SEEN_FILE, "w") as f:
+        json.dump(list(seen), f)
+
+
+def handle_ignored_sender(config, imap, msg_id, sender_email):
+    """Handle an email from an ignored sender. Notify once, then always delete."""
+    seen = load_ignored_seen()
+    if sender_email not in seen:
+        # First time — notify via HA
+        create_notification(
+            "Ignored Sender Detected",
+            f"Email received from ignored sender: {sender_email}. "
+            "All emails from this sender will be silently deleted.",
+        )
+        send_mobile_notification(
+            config,
+            "Ignored Sender Detected",
+            f"Ignored email from: {sender_email}",
+        )
+        seen.add(sender_email)
+        save_ignored_seen(seen)
+        log.info("First ignored email from %s — notified", sender_email)
+    else:
+        log.info("Ignored email from %s — already notified, deleting", sender_email)
+
+    delete_message(imap, msg_id)
+
+
+def check_completed_items(config):
+    """Poll the todo list for completed items. Email the requester and clean up."""
+    todo_entity = config.get("todo_entity_id", "todo.media_requests")
+    tracker = load_tracker()
+
+    if not tracker:
+        return
+
+    # Get todo items via service call — returns completed and needs_action items
+    status, body = ha_api("POST", "services/todo/get_items", {
+        "entity_id": todo_entity,
+    })
+    if status != 200:
+        log.debug("Failed to fetch todo items: %s", body)
+        return
+
+    try:
+        response = json.loads(body)
+    except json.JSONDecodeError:
+        return
+
+    # Extract completed items — handle multiple possible response formats
+    completed_items = []
+
+    # Format 1: {"service_response": {"todo.entity": {"items": [...]}}}
+    if isinstance(response, dict) and "service_response" in response:
+        entity_data = response["service_response"].get(todo_entity, {})
+        items = entity_data.get("items", [])
+        completed_items = [i for i in items if i.get("status") == "completed"]
+
+    # Format 2: {"todo.entity": {"items": [...]}}
+    elif isinstance(response, dict) and todo_entity in response:
+        items = response[todo_entity].get("items", [])
+        completed_items = [i for i in items if i.get("status") == "completed"]
+
+    # Format 3: {"items": [...]}
+    elif isinstance(response, dict) and "items" in response:
+        completed_items = [i for i in response["items"] if i.get("status") == "completed"]
+
+    # Format 4: [...]
+    elif isinstance(response, list):
+        completed_items = [i for i in response if i.get("status") == "completed"]
+
+    notified = []
+    for item in completed_items:
+        item_summary = item.get("summary", "")
+        if item_summary in tracker:
+            sender_email = tracker[item_summary]
+            # Extract the media title (everything before " - FriendlyName")
+            title = item_summary.rsplit(" - ", 1)[0] if " - " in item_summary else item_summary
+
+            send_reply(
+                config,
+                sender_email,
+                "Media Request Update",
+                None,
+                approved=True,
+                custom_body=f"{title} is Now Available!",
+            )
+            notified.append(item_summary)
+            log.info("Completion notification sent: %s → %s", title, sender_email)
+
+    # Remove notified items from tracker
+    if notified:
+        for item_summary in notified:
+            tracker.pop(item_summary, None)
+        save_tracker(tracker)
+
+
 # ── IMAP poll ────────────────────────────────────────────────────────
 def poll_inbox(config):
     """Connect to IMAP, fetch UNSEEN messages, process each one."""
@@ -347,6 +489,10 @@ def poll_inbox(config):
 
     domain_replacements = config.get("domain_replacements", "")
 
+    # Parse ignored_emails: comma-separated string → list
+    raw_ignored = config.get("ignored_emails", "")
+    ignored_emails = [e.strip().lower() for e in raw_ignored.split(",") if e.strip()] if raw_ignored else []
+
     try:
         imap = imaplib.IMAP4_SSL(server, port)
         imap.login(username, password)
@@ -371,7 +517,7 @@ def poll_inbox(config):
             try:
                 process_message(imap, msg_id, config, todo_entity,
                                 name_mappings, approved_emails, send_replies,
-                                domain_replacements)
+                                domain_replacements, ignored_emails)
             except Exception as e:
                 log.error("Error processing message %s: %s", msg_id, e)
     finally:
@@ -385,7 +531,7 @@ def poll_inbox(config):
 
 def process_message(imap, msg_id, config, todo_entity,
                     name_mappings, approved_emails, send_replies,
-                    domain_replacements):
+                    domain_replacements, ignored_emails):
     """Process a single email message."""
     status, msg_data = imap.fetch(msg_id, "(RFC822)")
     if status != "OK":
@@ -397,9 +543,14 @@ def process_message(imap, msg_id, config, todo_entity,
 
     raw_sender = decode_header_value(msg.get("From", ""))
     sender_email = parse_sender_email(raw_sender)
-    # Apply domain replacements (e.g. 5551234567@vzwpix.com → +15551234567)
+    # Apply domain replacements (e.g. 5551234567@vzwpix.com → +15551234567@vzwpix.com)
     lookup_key = apply_domain_replacements(sender_email, domain_replacements)
     subject = decode_header_value(msg.get("Subject", "No Subject"))
+
+    # Ignored sender check — notify once, then silent delete
+    if sender_email in ignored_emails or lookup_key in ignored_emails:
+        handle_ignored_sender(config, imap, msg_id, sender_email)
+        return
 
     # Approved sender check — match against both raw email and replaced form
     if approved_emails and sender_email not in approved_emails and lookup_key not in approved_emails:
@@ -432,53 +583,187 @@ def process_message(imap, msg_id, config, todo_entity,
     # Format items: "Movie Title - FriendlyName"
     formatted_items = [f"{line} - {friendly_name}" for line in lines]
 
+    # Duplicate detection — skip items already on the list
+    tracker = load_tracker()
+    new_items = [item for item in formatted_items if item not in tracker]
+    skipped = len(formatted_items) - len(new_items)
+    if skipped:
+        log.info("Skipped %d duplicate item(s) from %s", skipped, sender_email)
+    if not new_items:
+        log.info("All items from %s were duplicates — nothing to add", sender_email)
+        delete_message(imap, msg_id)
+        return
+
+    # Extract just the media titles for the new items (for reply and notifications)
+    new_lines = [item.rsplit(" - ", 1)[0] for item in new_items]
+
     # 1. Add each to the HA todo list
-    for item in formatted_items:
+    for item in new_items:
         add_to_todo(todo_entity, item)
 
-    # 2. Persistent notification
-    item_list = "\n".join(f"• {line}" for line in lines)
+    # 2. Track who submitted each item (for completion notifications)
+    track_items(new_items, sender_email)
+
+    # 3. Persistent notification
+    item_list = "\n".join(f"• {line}" for line in new_lines)
+    notification_msg = f"{len(new_lines)} item(s) added:\n{item_list}"
+    if skipped:
+        notification_msg += f"\n({skipped} duplicate(s) skipped)"
     create_notification(
         f"New Media Request from {friendly_name}",
-        f"{len(lines)} item(s) added:\n{item_list}",
+        notification_msg,
     )
 
-    # 3. Mobile push notification
+    # 4. Mobile push notification
     send_mobile_notification(
         config,
         f"New Media Request from {friendly_name}",
-        f"{len(lines)} item(s) added to the list",
+        f"{len(new_lines)} item(s) added to the list",
     )
 
-    # 4. Reply to sender
+    # 5. Reply to sender
     if send_replies:
-        send_reply(config, sender_email, subject, lines)
+        send_reply(config, sender_email, subject, new_lines)
 
-    # 5. Permanent log
-    append_log(friendly_name, lines)
+    # 6. Permanent log
+    append_log(friendly_name, new_lines)
 
-    # 6. Delete the email
+    # 7. Delete the email
     delete_message(imap, msg_id)
 
-    log.info("Processed %d item(s) from %s (%s)", len(lines), friendly_name, sender_email)
+    log.info("Processed %d item(s) from %s (%s)", len(new_lines), friendly_name, sender_email)
+
+
+# ── Startup self-test ────────────────────────────────────────────────
+def run_self_test(config):
+    """Verify IMAP, SMTP, and HA API connectivity on startup."""
+    log.info("=" * 50)
+    log.info("Running startup self-test...")
+    log.info("=" * 50)
+    all_passed = True
+
+    # Test 1: IMAP
+    try:
+        imap = imaplib.IMAP4_SSL(
+            config.get("imap_server", "imap.gmail.com"),
+            config.get("imap_port", 993),
+        )
+        imap.login(config["imap_username"], config["imap_password"])
+        imap.select(config.get("imap_folder", "INBOX"))
+        imap.close()
+        imap.logout()
+        log.info("[PASS] IMAP — connected to %s", config.get("imap_server"))
+    except Exception as e:
+        log.error("[FAIL] IMAP — %s", e)
+        all_passed = False
+
+    # Test 2: SMTP
+    try:
+        username = config["imap_username"]
+        password = config["imap_password"]
+        with smtplib.SMTP(config.get("smtp_server", "smtp.gmail.com"),
+                          config.get("smtp_port", 587), timeout=15) as srv:
+            srv.ehlo()
+            srv.starttls()
+            srv.ehlo()
+            srv.login(username, password)
+        log.info("[PASS] SMTP — authenticated with %s", config.get("smtp_server"))
+    except Exception as e:
+        log.error("[FAIL] SMTP — %s", e)
+        all_passed = False
+
+    # Test 3: HA API
+    try:
+        status, body = ha_api("GET", "")
+        if status == 200:
+            log.info("[PASS] HA API — connected to Supervisor")
+        else:
+            log.error("[FAIL] HA API — status %s: %s", status, body)
+            all_passed = False
+    except Exception as e:
+        log.error("[FAIL] HA API — %s", e)
+        all_passed = False
+
+    # Test 4: Todo entity exists
+    todo_entity = config.get("todo_entity_id", "todo.media_requests")
+    try:
+        status, body = ha_api("GET", f"states/{todo_entity}")
+        if status == 200:
+            log.info("[PASS] Todo entity — %s exists", todo_entity)
+        else:
+            log.error("[FAIL] Todo entity — %s not found (status %s)", todo_entity, status)
+            all_passed = False
+    except Exception as e:
+        log.error("[FAIL] Todo entity — %s", e)
+        all_passed = False
+
+    # Test 5: Mobile notify service (if configured)
+    mobile_svc = config.get("mobile_notify_service", "")
+    if mobile_svc:
+        service_name = mobile_svc if mobile_svc.startswith("notify.") else f"notify.{mobile_svc}"
+        domain, service = service_name.split(".", 1)
+        status, body = ha_api("GET", "services")
+        if status == 200:
+            try:
+                services = json.loads(body)
+                found = False
+                for svc_domain in services:
+                    if svc_domain.get("domain") == domain:
+                        for svc in svc_domain.get("services", {}):
+                            if svc == service:
+                                found = True
+                                break
+                if found:
+                    log.info("[PASS] Mobile notify — %s available", service_name)
+                else:
+                    log.warning("[WARN] Mobile notify — %s not found in services list", service_name)
+            except json.JSONDecodeError:
+                log.warning("[WARN] Mobile notify — could not parse services list")
+        else:
+            log.warning("[WARN] Mobile notify — could not check services (status %s)", status)
+
+    log.info("=" * 50)
+    if all_passed:
+        log.info("Self-test PASSED — all checks OK")
+    else:
+        log.error("Self-test FAILED — check errors above")
+    log.info("=" * 50)
+
+    return all_passed
 
 
 # ── Main loop ────────────────────────────────────────────────────────
 def main():
-    log.info("Media Request Tracker starting")
+    log.info("Media Request Tracker v2.0 starting")
     config = load_config()
-    poll_interval = config.get("poll_interval_seconds", 60)
 
-    log.info("Polling every %d seconds", poll_interval)
+    run_self_test(config)
+
+    log.info("Polling every %d seconds", config.get("poll_interval_seconds", 60))
     log.info("IMAP server: %s", config.get("imap_server", "imap.gmail.com"))
     log.info("Todo entity: %s", config.get("todo_entity_id", "todo.media_requests"))
-    log.info("Approved senders: %s", config.get("approved_emails", ["(any)"]))
+    log.info("Approved senders: %s", config.get("approved_emails", "(any)"))
 
+    last_config = config
     while True:
+        # Reload config each cycle — picks up changes without restart
+        try:
+            config = load_config()
+            poll_interval = config.get("poll_interval_seconds", 60)
+            if config != last_config:
+                log.info("Config reloaded — changes detected")
+                last_config = config
+        except Exception as e:
+            log.error("Config reload failed, using previous: %s", e)
+
         try:
             poll_inbox(config)
         except Exception as e:
             log.error("Poll cycle error: %s", e)
+        try:
+            check_completed_items(config)
+        except Exception as e:
+            log.error("Completion check error: %s", e)
         time.sleep(poll_interval)
 
 

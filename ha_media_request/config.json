@@ -1,6 +1,6 @@
 {
   "name": "HA Media Request",
-  "version": "1.0",
+  "version": "2.0",
   "slug": "ha_media_request",
   "description": "Polls Gmail for media requests. Each email line becomes a checklist item in HA.",
   "arch": ["aarch64", "amd64"],
@@ -23,7 +23,8 @@
     "poll_interval_seconds": 60,
     "approved_emails": "",
     "name_mappings": "",
-    "domain_replacements": ""
+    "domain_replacements": "",
+    "ignored_emails": ""
   },
   "schema": {
     "imap_server": "str",
@@ -40,7 +41,8 @@
     "poll_interval_seconds": "int",
     "approved_emails": "str",
     "name_mappings": "str",
-    "domain_replacements": "str"
+    "domain_replacements": "str",
+    "ignored_emails": "str"
   },
   "descriptions": {
     "en": {
@@ -58,7 +60,8 @@
       "poll_interval_seconds": "How often to check for new emails, in seconds. Example: 60",
       "approved_emails": "Comma-separated list of allowed senders. Leave blank to accept all. Example: james@gmail.com, sarah@outlook.com",
       "name_mappings": "Comma-separated email=Name pairs. Unmapped senders use their email username. Example: james@gmail.com=James, sarah@outlook.com=Sarah",
-      "domain_replacements": "Comma-separated domain=prefix pairs for SMS gateways. Normalizes the local part so 5551234567, 15551234567, and +15551234567 all match as +15551234567@domain. Example: @vzwpix.com=+1, @tmomail.net=+1"
+      "domain_replacements": "Comma-separated domain=prefix pairs for SMS gateways. Normalizes the local part so 5551234567, 15551234567, and +15551234567 all match as +15551234567@domain. Example: @vzwpix.com=+1, @tmomail.net=+1",
+      "ignored_emails": "Comma-separated list of email addresses to silently ignore. First occurrence is logged and notified, then all further emails are deleted with no reply. Example: spam@example.com, newsletters@store.com"
     }
   }
 }

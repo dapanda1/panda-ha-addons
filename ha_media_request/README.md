@@ -15,6 +15,7 @@ Polls a Gmail inbox via IMAP. When an approved sender emails, each line of the b
 9. Sends a mobile push notification via the Companion App
 10. Appends to a permanent log file at `/data/media_request_log.txt`
 11. Deletes the email after processing
+12. When a task is checked off, emails the original requester that it's now available
 
 ---
 
@@ -138,6 +139,12 @@ Example: `@vzwpix.com=+1, @tmomail.net=+1, @txt.att.net=+1`
 
 With this, a text from `5551234567@vzwpix.com` or `15551234567@vzwpix.com` both normalize to `+15551234567@vzwpix.com`. You can then map it in `name_mappings` as `+15551234567@vzwpix.com=James` and approve it as `+15551234567@vzwpix.com` in `approved_emails`.
 
+### ignored_emails
+
+Comma-separated list of email addresses to silently ignore. The first time an ignored sender's email arrives, you get a persistent notification and a mobile push so you know they hit the inbox. All subsequent emails from that sender are deleted with no notification and no reply.
+
+Example: `spam@example.com, newsletters@store.com, noreply@social.com`
+
 ---
 
 ## Email Format
@@ -162,6 +169,18 @@ If the sender replies to an existing email thread, only the new content above th
 If any line is exactly `wakeup`, the entire email is silently ignored.
 
 Signature lines (starting with `--`, `Best`, `Regards`, `Sent from`, `Unsubscribe`) and everything after them are stripped automatically.
+
+---
+
+## Completion Notifications
+
+When you check off a task in the To-do list, the add-on detects it on the next poll cycle and emails the person who originally requested it:
+
+```
+Monkey Shines is Now Available!
+```
+
+The requester mapping is stored in `/data/request_tracker.json` inside the add-on container. Once the notification is sent, the item is removed from the tracker. The email goes to the original sender address (including SMS gateway addresses).
 
 ---
 
@@ -212,3 +231,4 @@ ha_media_request/
 | Mobile notifications not arriving | Verify the service name under Settings → Devices & Services → Mobile App. Format: `mobile_app_device_name`. |
 | `wakeup` not filtering | The word must be on its own line, by itself. Case-insensitive. |
 | Signature lines leaking in | The filter catches common patterns. Add custom patterns by editing `extract_lines()` in the Python script. |
+| Completion email not sent | Check that the item text in the todo list exactly matches what was added. The tracker file at `/data/request_tracker.json` shows pending items. |
