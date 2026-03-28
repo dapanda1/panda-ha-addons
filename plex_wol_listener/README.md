@@ -120,3 +120,9 @@ If the proxy process crashes, the s6 finish script waits 5 seconds and restarts 
 
 ### Graceful Shutdown
 On SIGTERM (add-on stop/restart), all active proxy connections are cleanly closed before the process exits, preventing hung connections.
+
+### Config Migration
+On startup, a migration script checks for deprecated or renamed config fields and updates them automatically via the Supervisor API. Users can update the add-on without uninstalling — breaking config changes are handled transparently.
+
+### WoL Toggle (`enable_wol`)
+Master switch for Wake-on-LAN. When off, the proxy continues to run and forward traffic to the Plex server but never sends WoL packets. Useful for troubleshooting or running the add-on purely as a port redirect. The dashboard toggle must also be on for WoL to fire. Default: enabled.

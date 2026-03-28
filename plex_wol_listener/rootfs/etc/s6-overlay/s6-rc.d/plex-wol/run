@@ -1,2 +1,3 @@
 #!/usr/bin/with-contenv bashio
+python3 -u /migrate.py
 exec python3 -u /listener.py

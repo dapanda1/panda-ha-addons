@@ -1,6 +1,6 @@
 {
   "name": "Plex WoL Listener",
-  "version": "5.0",
+  "version": "5.2",
   "slug": "plex_wol_listener",
   "description": "Proxies Plex traffic, wakes server via WoL, auto-sleeps on idle, Plex token validation, GeoIP blocking, flood detection, HA sensors, dashboard toggles, and notifications",
   "arch": ["aarch64", "amd64"],
@@ -13,6 +13,7 @@
     "plex_server_ip": "0.0.0.0",
     "target_mac": "00:00:00:00:00:00",
     "broadcast": "0.0.0.0",
+    "enable_wol": true,
     "listen_port": 32400,
     "plex_server_port": 32400,
     "rate_limit_seconds": 30,
@@ -50,6 +51,7 @@
     "plex_server_ip": "str",
     "target_mac": "str",
     "broadcast": "str",
+    "enable_wol": "bool",
     "listen_port": "int",
     "plex_server_port": "int",
     "rate_limit_seconds": "int",

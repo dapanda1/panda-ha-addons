@@ -1,5 +1,11 @@
 # Changelog
 
+## 5.2
+- Added `enable_wol` config toggle: master switch for WoL. When off, the proxy still runs and forwards traffic but never sends WoL packets. WoL only fires if both the config toggle and dashboard toggle are on. Log shows which one disabled it.
+
+## 5.1
+- Added config migration system (`migrate.py`): runs on every startup, compares stored schema version to current, renames/drops deprecated config fields automatically, and POSTs cleaned config to the Supervisor API. Users can update without uninstalling. `enable_token_validation` mapped as dropped from v5.0.
+
 ## 5.0
 - Removed Plex token validation (cannot inspect TLS-encrypted traffic from modern Plex clients)
 - Replaced with session-based user tracking (`enable_user_tracking`): queries the Plex server's `/status/sessions` endpoint over HTTPS after a wake to identify who connected

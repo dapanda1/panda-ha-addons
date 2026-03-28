@@ -818,6 +818,7 @@ def load_options():
         "plex_server_ip": "",
         "target_mac": "",
         "broadcast": "255.255.255.255",
+        "enable_wol": True,
         "listen_port": 32400,
         "plex_server_port": 32400,
         "rate_limit_seconds": 30,
@@ -1056,7 +1057,9 @@ def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
             return
 
         # Check if WoL is enabled via dashboard toggle
-        wol_enabled = toggles.get_wol() if toggles.enabled else True
+        wol_config_enabled = bool(opts.get("enable_wol", True))
+        wol_dashboard_enabled = toggles.get_wol() if toggles.enabled else True
+        wol_enabled = wol_config_enabled and wol_dashboard_enabled
 
         # Smart WoL: check for connection burst before sending WoL
         burst_ok = burst_detector.record_and_check()
@@ -1066,7 +1069,8 @@ def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
         with wol_state["lock"]:
             elapsed = now - wol_state["last_wol"]
             if not wol_enabled:
-                log(f"[{addr}]{user_tag} Server down — WoL disabled via dashboard toggle")
+                reason = "config" if not wol_config_enabled else "dashboard toggle"
+                log(f"[{addr}]{user_tag} Server down — WoL disabled via {reason}")
             elif not burst_ok:
                 count = burst_detector.get_count()
                 log(f"[{addr}]{user_tag} Server down — background poll ignored by smart WoL "
@@ -1159,11 +1163,12 @@ def main():
     flood_threshold = max(5, int(opts.get("flood_threshold", 10)))
     flood_window = int(opts.get("flood_window_seconds", 60))
 
-    log("=== Plex WoL Proxy v5.0 ===")
+    log("=== Plex WoL Proxy v5.2 ===")
     log(f"  Listen:           0.0.0.0:{listen_port}")
     log(f"  Plex server:      {opts.get('plex_server_ip') or '(NOT SET)'}:{opts.get('plex_server_port', 32400)}")
     log(f"  Target MAC:       {opts.get('target_mac') or '(NOT SET)'}")
     log(f"  Broadcast:        {opts.get('broadcast')}")
+    log(f"  WoL:              {'ON' if opts.get('enable_wol', True) else 'OFF'}")
     log(f"  Rate limit:       {opts.get('rate_limit_seconds')}s")
     log(f"  Wake timeout:     {opts.get('wake_timeout_seconds')}s")
     log(f"  Flood alert:      >{flood_threshold} in {flood_window}s")
@@ -1193,7 +1198,7 @@ def main():
     # Dashboard toggles (must init before geoip/sleeper so they can reference it)
     toggles = DashboardToggles(
         enabled=bool(opts.get("enable_dashboard_toggles", True)),
-        initial_wol=True,
+        initial_wol=bool(opts.get("enable_wol", True)),
         initial_geoip=bool(opts.get("enable_geoip", True)),
         initial_quiet=bool(opts.get("enable_quiet_mode", False)),
         initial_sleep=bool(opts.get("enable_sleep_trigger", False)),

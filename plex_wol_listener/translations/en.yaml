@@ -8,6 +8,9 @@ configuration:
   broadcast:
     name: Broadcast Address
     description: Your subnet's broadcast address for sending WoL packets. Usually your network address with 255 as the last number (e.g. 192.168.1.255).
+  enable_wol:
+    name: Enable Wake-on-LAN
+    description: Master switch for WoL. When off, the proxy still runs and forwards traffic but never sends WoL packets. Useful for troubleshooting or when you want the port redirect without automatic wake. The dashboard toggle must also be on for WoL to fire.
   listen_port:
     name: Listen Port
     description: The port the proxy listens on for incoming connections. Should match your router's port forward destination. Default 32400.
