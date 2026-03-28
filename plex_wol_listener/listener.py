@@ -1070,7 +1070,9 @@ def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
             elapsed = now - wol_state["last_wol"]
             if not wol_enabled:
                 reason = "config" if not wol_config_enabled else "dashboard toggle"
-                log(f"[{addr}]{user_tag} Server down — WoL disabled via {reason}")
+                log(f"[{addr}]{user_tag} Server down — WoL disabled via {reason}, dropping connection")
+                client_sock.close()
+                return
             elif not burst_ok:
                 count = burst_detector.get_count()
                 log(f"[{addr}]{user_tag} Server down — background poll ignored by smart WoL "
@@ -1163,7 +1165,7 @@ def main():
     flood_threshold = max(5, int(opts.get("flood_threshold", 10)))
     flood_window = int(opts.get("flood_window_seconds", 60))
 
-    log("=== Plex WoL Proxy v5.2 ===")
+    log("=== Plex WoL Proxy v5.2.1 ===")
     log(f"  Listen:           0.0.0.0:{listen_port}")
     log(f"  Plex server:      {opts.get('plex_server_ip') or '(NOT SET)'}:{opts.get('plex_server_port', 32400)}")
     log(f"  Target MAC:       {opts.get('target_mac') or '(NOT SET)'}")

@@ -1,5 +1,8 @@
 # Changelog
 
+## 5.2.1
+- Fixed: when WoL is disabled (config or dashboard), connections are now dropped immediately instead of waiting 120 seconds for a server that will never wake
+
 ## 5.2
 - Added `enable_wol` config toggle: master switch for WoL. When off, the proxy still runs and forwards traffic but never sends WoL packets. WoL only fires if both the config toggle and dashboard toggle are on. Log shows which one disabled it.
 
