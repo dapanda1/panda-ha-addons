@@ -1,5 +1,8 @@
 # Changelog
 
+## 5.3.4
+- Added config dependency enforcement at startup: features that depend on other settings are auto-enabled or auto-disabled with a log message explaining why. Covers auto-discover + no-wake list, auto-discover + admin token, user tracking + admin token, sleep trigger + SSH user.
+
 ## 5.3.3
 - Fixed optional config fields showing as required (red asterisk) — `plex_admin_token`, `ip_allowlist`, `ip_blocklist`, `nowake_list`, `allow_ip_plex_relay`, `server_ssh_user`, `user_friendly_names` now accept empty values
 - Startup log now shows the full active no-wake IP list (manual + auto-discovered - excluded)
