@@ -560,6 +560,9 @@ class NoWakeList:
             return False
         return ip_str in self.ips
 
+    def get_active_ips(self):
+        return sorted(self.ips)
+
 
 # ---------------------------------------------------------------------------
 # Flood detection
@@ -1243,7 +1246,7 @@ def main():
     dedup_cooldown = int(opts.get("log_dedup_cooldown_seconds", 300))
     wol_disabled_dedup.set_cooldown(dedup_cooldown)
 
-    log("=== Plex WoL Proxy v5.3.2 ===")
+    log("=== Plex WoL Proxy v5.3.3 ===")
     log(f"  Listen:           0.0.0.0:{listen_port}")
     log(f"  Plex server:      {opts.get('plex_server_ip') or '(NOT SET)'}:{opts.get('plex_server_port', 32400)}")
     log(f"  Target MAC:       {opts.get('target_mac') or '(NOT SET)'}")
@@ -1309,6 +1312,9 @@ def main():
         admin_token=str(opts.get("plex_admin_token", "")),
         exclude_str=str(opts.get("allow_ip_plex_relay", "")),
     )
+    if nowake_list.enabled:
+        active = nowake_list.get_active_ips()
+        log(f"  No-wake active:   {active if active else '(none)'}")
 
     sensors = HASensors(bool(opts.get("enable_ha_sensors", True)))
     sensors.set_server_status("unknown")

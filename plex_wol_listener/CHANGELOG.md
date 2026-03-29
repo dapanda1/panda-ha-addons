@@ -1,5 +1,10 @@
 # Changelog
 
+## 5.3.3
+- Fixed optional config fields showing as required (red asterisk) — `plex_admin_token`, `ip_allowlist`, `ip_blocklist`, `nowake_list`, `allow_ip_plex_relay`, `server_ssh_user`, `user_friendly_names` now accept empty values
+- Startup log now shows the full active no-wake IP list (manual + auto-discovered - excluded)
+- Updated `allow_ip_plex_relay` description to explain that auto-discovered IPs are in-memory only and re-discovered on every restart
+
 ## 5.3.2
 - Renamed `nowake_exclude` to `allow_ip_plex_relay` for clarity. Migration handles the rename automatically.
 

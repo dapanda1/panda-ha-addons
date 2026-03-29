@@ -73,7 +73,7 @@ configuration:
     description: On startup, queries plex.tv for your server's relay IPs and automatically adds them to the no-wake list. Requires the Plex admin token to be set and the no-wake list to be enabled.
   allow_ip_plex_relay:
     name: Allow Wake from Plex Relay IPs
-    description: Comma-separated IPs to exclude from the no-wake list. If auto-discovery incorrectly flags a Plex relay IP, add it here to allow it to wake the server normally.
+    description: Comma-separated IPs to exclude from the no-wake list. Auto-discovered relay IPs are stored in memory only and re-discovered on every restart — they are not saved to a file. Add an IP here to override auto-discovery and allow it to wake the server. Check the add-on log at startup to see the full active no-wake list.
   enable_sleep_trigger:
     name: Sleep Trigger
     description: Puts the Plex server to sleep via SSH after the configured idle time or max awake time. Requires OpenSSH Server installed on the Plex server. Can be toggled live from the HA dashboard.
