@@ -1,5 +1,8 @@
 # Changelog
 
+## 5.3.5
+- Config dependency corrections are now persisted to the Supervisor API so the HA UI reflects the actual state of toggles after auto-enable/disable
+
 ## 5.3.4
 - Added config dependency enforcement at startup: features that depend on other settings are auto-enabled or auto-disabled with a log message explaining why. Covers auto-discover + no-wake list, auto-discover + admin token, user tracking + admin token, sleep trigger + SSH user.
 

@@ -1247,27 +1247,51 @@ def main():
     wol_disabled_dedup.set_cooldown(dedup_cooldown)
 
     # --- Config dependency enforcement ---
+    config_changed = False
+
     # Auto-discover requires no-wake list
     if opts.get("auto_discover_plex_relays") and not opts.get("enable_nowake_list"):
         opts["enable_nowake_list"] = True
+        config_changed = True
         log("Config: auto_discover_plex_relays requires enable_nowake_list — auto-enabled")
 
     # Auto-discover requires admin token
     if opts.get("auto_discover_plex_relays") and not opts.get("plex_admin_token"):
         opts["auto_discover_plex_relays"] = False
+        config_changed = True
         log("Config: auto_discover_plex_relays requires plex_admin_token — auto-disabled")
 
     # User tracking requires admin token
     if opts.get("enable_user_tracking") and not opts.get("plex_admin_token"):
         opts["enable_user_tracking"] = False
+        config_changed = True
         log("Config: enable_user_tracking requires plex_admin_token — auto-disabled")
 
     # Sleep trigger requires SSH user
     if opts.get("enable_sleep_trigger") and not opts.get("server_ssh_user"):
         opts["enable_sleep_trigger"] = False
+        config_changed = True
         log("Config: enable_sleep_trigger requires server_ssh_user — auto-disabled")
 
-    log("=== Plex WoL Proxy v5.3.4 ===")
+    # Persist corrected config to Supervisor so UI reflects changes
+    if config_changed and SUPERVISOR_TOKEN:
+        try:
+            payload = json.dumps({"options": opts}).encode()
+            req = urllib.request.Request(
+                "http://supervisor/addons/self/options",
+                data=payload,
+                headers={
+                    "Authorization": f"Bearer {SUPERVISOR_TOKEN}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            urllib.request.urlopen(req, timeout=30)
+            log("Config: corrected settings saved to Supervisor")
+        except Exception as e:
+            log(f"Config: WARNING — failed to save corrected settings: {e}")
+
+    log("=== Plex WoL Proxy v5.3.5 ===")
     log(f"  Listen:           0.0.0.0:{listen_port}")
     log(f"  Plex server:      {opts.get('plex_server_ip') or '(NOT SET)'}:{opts.get('plex_server_port', 32400)}")
     log(f"  Target MAC:       {opts.get('target_mac') or '(NOT SET)'}")
