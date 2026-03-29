@@ -30,9 +30,9 @@ import subprocess
 import threading
 import time
 import urllib.request
-import urllib.parse
 
 OPTIONS_PATH = "/data/options.json"
+VERSION = "5.4"
 PROXY_BUF = 65536
 CONNECT_POLL_INTERVAL = 2
 SSH_KEY_PATH = "/data/plex_wol_key"
@@ -136,6 +136,9 @@ def ha_api_get(endpoint):
         return None
 
 
+NOTIFY_TARGET = ""  # set from config in main()
+
+
 def ha_notify(title, message):
     """Send notification via HA persistent notification + mobile app."""
     ha_api_post("/services/persistent_notification/create", {
@@ -143,10 +146,11 @@ def ha_notify(title, message):
         "message": message,
         "notification_id": "plex_wol_" + str(int(time.time())),
     })
-    ha_api_post("/services/notify/mobile_app_pixel_10_pro", {
-        "title": title,
-        "message": message,
-    })
+    if NOTIFY_TARGET:
+        ha_api_post(f"/services/notify/{NOTIFY_TARGET}", {
+            "title": title,
+            "message": message,
+        })
 
 
 # ---------------------------------------------------------------------------
@@ -410,13 +414,15 @@ class PlexSessionTracker:
 # GeoIP
 # ---------------------------------------------------------------------------
 class GeoIPChecker:
+    CACHE_TTL = 86400  # 24 hours
+
     def __init__(self, enabled, allowed_countries_str, toggles=None):
         self.base_enabled = enabled
         self.allowed = set()
         self.toggles = toggles
         if allowed_countries_str:
             self.allowed = {c.strip().upper() for c in allowed_countries_str.split(",")}
-        self.cache = {}
+        self.cache = {}  # ip -> (allowed_bool, timestamp)
         self.lock = threading.Lock()
 
     @property
@@ -431,24 +437,32 @@ class GeoIPChecker:
         except Exception:
             return False
 
+    def _prune_cache(self):
+        now = time.time()
+        self.cache = {k: (v, t) for k, (v, t) in self.cache.items()
+                      if now - t < self.CACHE_TTL}
+
     def is_allowed(self, ip_str):
         if not self.enabled:
             return True
         if self.is_private(ip_str):
             return True
 
+        now = time.time()
         with self.lock:
             if ip_str in self.cache:
-                return self.cache[ip_str]
+                allowed, cached_at = self.cache[ip_str]
+                if now - cached_at < self.CACHE_TTL:
+                    return allowed
 
         allowed = True
         try:
-            url = f"http://ip-api.com/json/{ip_str}?fields=status,countryCode"
-            req = urllib.request.Request(url)
+            url = f"https://ipapi.co/{ip_str}/json/"
+            req = urllib.request.Request(url, headers={"User-Agent": "Plex-WoL-Listener"})
             resp = urllib.request.urlopen(req, timeout=5)
             result = json.loads(resp.read().decode())
-            if result.get("status") == "success":
-                country = result.get("countryCode", "").upper()
+            if not result.get("error"):
+                country = result.get("country_code", "").upper()
                 allowed = country in self.allowed
                 if not allowed:
                     log(f"GeoIP BLOCKED: {ip_str} is from {country} (allowed: {self.allowed})")
@@ -457,7 +471,8 @@ class GeoIPChecker:
             allowed = True
 
         with self.lock:
-            self.cache[ip_str] = allowed
+            self.cache[ip_str] = (allowed, now)
+            self._prune_cache()
         return allowed
 
 
@@ -531,6 +546,9 @@ class NoWakeList:
                 "https://plex.tv/api/v2/resources?includeRelay=1",
                 headers={
                     "X-Plex-Token": admin_token,
+                    "X-Plex-Client-Identifier": "plex-wol-listener",
+                    "X-Plex-Product": "Plex WoL Listener",
+                    "X-Plex-Version": VERSION,
                     "Accept": "application/json",
                 },
             )
@@ -919,6 +937,7 @@ def load_options():
         "enable_health_check": True,
         "health_check_port": 32401,
         "enable_ha_sensors": True,
+        "notify_target": "",
         "enable_file_logging": True,
         "log_retention_days": 14,
         "log_dedup_cooldown_seconds": 300,
@@ -1246,6 +1265,9 @@ def main():
     dedup_cooldown = int(opts.get("log_dedup_cooldown_seconds", 300))
     wol_disabled_dedup.set_cooldown(dedup_cooldown)
 
+    global NOTIFY_TARGET
+    NOTIFY_TARGET = str(opts.get("notify_target", "")).strip()
+
     # --- Config dependency enforcement ---
     config_changed = False
 
@@ -1291,7 +1313,7 @@ def main():
         except Exception as e:
             log(f"Config: WARNING — failed to save corrected settings: {e}")
 
-    log("=== Plex WoL Proxy v5.3.5 ===")
+    log(f"=== Plex WoL Proxy v{VERSION} ===")
     log(f"  Listen:           0.0.0.0:{listen_port}")
     log(f"  Plex server:      {opts.get('plex_server_ip') or '(NOT SET)'}:{opts.get('plex_server_port', 32400)}")
     log(f"  Target MAC:       {opts.get('target_mac') or '(NOT SET)'}")
@@ -1314,6 +1336,7 @@ def main():
     log(f"  Dashboard toggles:{'ON' if opts.get('enable_dashboard_toggles') else 'OFF'}")
     log(f"  File logging:     {'ON — ' + str(opts.get('log_retention_days', 14)) + ' day retention' if opts.get('enable_file_logging') else 'OFF'}")
     log(f"  Quiet mode:       {'ON' if opts.get('enable_quiet_mode') else 'OFF'}")
+    log(f"  Notify target:    {NOTIFY_TARGET or '(persistent only)'}")
     log(f"  HA API token:     {'present' if SUPERVISOR_TOKEN else 'MISSING'}")
 
     if not opts.get("plex_server_ip"):

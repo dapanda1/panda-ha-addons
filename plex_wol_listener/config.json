@@ -1,6 +1,6 @@
 {
   "name": "Plex WoL Listener",
-  "version": "5.3.5",
+  "version": "5.4",
   "slug": "plex_wol_listener",
   "description": "Proxies Plex traffic, wakes server via WoL, auto-sleeps on idle, Plex token validation, GeoIP blocking, flood detection, HA sensors, dashboard toggles, and notifications",
   "arch": ["aarch64", "amd64"],
@@ -40,6 +40,7 @@
     "enable_health_check": true,
     "health_check_port": 32401,
     "enable_ha_sensors": true,
+    "notify_target": "",
     "enable_dashboard_toggles": true,
     "enable_file_logging": true,
     "log_retention_days": 14,
@@ -81,6 +82,7 @@
     "enable_health_check": "bool",
     "health_check_port": "int",
     "enable_ha_sensors": "bool",
+    "notify_target": "str?",
     "enable_dashboard_toggles": "bool",
     "enable_file_logging": "bool",
     "log_retention_days": "int",

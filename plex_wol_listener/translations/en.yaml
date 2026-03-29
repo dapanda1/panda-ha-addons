@@ -98,6 +98,9 @@ configuration:
   enable_ha_sensors:
     name: HA Sensors
     description: Creates Home Assistant sensor entities for server status, last wake time, connection count, and unique IPs today. Can be used in automations and dashboards.
+  notify_target:
+    name: Mobile Notification Target
+    description: "The HA notify service for mobile push notifications (e.g. mobile_app_pixel_10_pro). Find yours in Developer Tools → Services → notify. Leave empty to only use persistent notifications (sidebar). Persistent notifications are always sent regardless."
   enable_dashboard_toggles:
     name: Dashboard Toggles
     description: Creates input_boolean entities for live control of WoL, GeoIP, quiet mode, and sleep trigger from the HA dashboard. Changes apply within 5 seconds, no restart needed.

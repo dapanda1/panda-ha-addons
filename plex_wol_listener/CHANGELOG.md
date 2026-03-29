@@ -1,5 +1,19 @@
 # Changelog
 
+## 5.4
+- Removed unused `urllib.parse` import
+- Centralized version string into `VERSION` constant used in headers and startup log
+- GeoIP cache now expires entries after 24 hours and prunes on each lookup
+- Confirmed admin token is never logged — only field name appears in log messages
+- Added `.gitignore` for GitHub publishing
+- **Breaking for existing users**: notification target is now configurable via `notify_target` instead of hardcoded. Set it to your HA notify service (e.g. `mobile_app_pixel_10_pro`). Leave empty for persistent notifications only.
+
+## 5.3.7
+- Switched GeoIP provider from ip-api.com (HTTP) to ipapi.co (HTTPS). All external requests now use encrypted connections. Free tier, no API key, 1000 lookups/day.
+
+## 5.3.6
+- Fixed plex.tv relay auto-discovery returning HTTP 400 — added required `X-Plex-Client-Identifier` and `X-Plex-Product` headers to the API request
+
 ## 5.3.5
 - Config dependency corrections are now persisted to the Supervisor API so the HA UI reflects the actual state of toggles after auto-enable/disable
 

@@ -59,7 +59,7 @@ When enabled, WoL is only sent when a burst of connections arrives within a shor
 Once a burst triggers WoL, subsequent connections are allowed through while the server wakes. Burst state resets when the server comes up. Default: disabled.
 
 ### GeoIP Blocking (`enable_geoip`)
-Blocks connections from countries not in the `allowed_countries` list. Uses ip-api.com for lookups with in-memory caching. Local/private IPs are always allowed. Controllable from the dashboard toggle. Default: enabled, US only.
+Blocks connections from countries not in the `allowed_countries` list. Uses ipapi.co over HTTPS for lookups with in-memory caching. Local/private IPs are always allowed. Controllable from the dashboard toggle. Default: enabled, US only.
 
 ### IP Allowlist (`enable_ip_allowlist`)
 Only allows connections from specific IPs listed in `ip_allowlist` (comma-separated). Default: disabled.
@@ -116,10 +116,11 @@ Writes logs to `/data/plex_wol.log` with daily rotation. Old logs are deleted af
 Suppresses routine "Server already up — proxying" and "Connection closed" log lines. WoL events, errors, timeouts, and alerts are always logged regardless. Controllable from the dashboard toggle. Default: disabled.
 
 ### Notifications
-Sends both persistent HA notifications and mobile push notifications on:
+Sends persistent HA notifications (sidebar) on all alert events. If `notify_target` is set (e.g. `mobile_app_pixel_10_pro`), also sends mobile push notifications. Find your notify service in **Developer Tools → Services → notify**. Notification events include:
 - Wake timeout (server failed to come up)
 - Flood detection threshold exceeded
 - Server put to sleep by idle trigger
+- Server woken by user (if user tracking enabled)
 
 ### Auto-restart
 If the proxy process crashes, the s6 finish script waits 5 seconds and restarts it automatically. No manual intervention needed.
