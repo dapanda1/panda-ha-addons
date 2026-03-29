@@ -68,7 +68,13 @@ Only allows connections from specific IPs listed in `ip_allowlist` (comma-separa
 Drops connections from specific IPs listed in `ip_blocklist` (comma-separated). Blocklist is checked before allowlist and GeoIP, so blocked IPs are always rejected regardless of other settings. Use this to ban known scanners or abusive clients. Default: disabled.
 
 ### No-Wake List (`enable_nowake_list`)
-IPs listed in `nowake_list` are proxied normally when the server is up, but if the server is down their connections are dropped instead of triggering WoL. Use this for plex.tv cloud health-check IPs and similar services that shouldn't wake your server. Default: disabled.
+IPs listed in `nowake_list` are proxied normally when the server is up, but if the server is down their connections are silently dropped instead of triggering WoL. Use for plex.tv cloud health-check IPs and relay servers. Default: disabled.
+
+### Auto-Discover Plex Relay IPs (`auto_discover_plex_relays`)
+On startup, queries plex.tv for your server's relay server IPs and automatically adds them to the no-wake list. Requires `plex_admin_token` and `enable_nowake_list` to both be set. Discovered IPs are logged at startup. If an auto-discovered IP is incorrectly flagged, add it to `allow_ip_plex_relay` to override. Default: disabled.
+
+### Log Dedup Cooldown (`log_dedup_cooldown_seconds`)
+Controls how long repeated "WoL disabled, dropping connection" messages are suppressed per IP. After logging once, the same IP's drops are silent for this many seconds. Default: 300 (5 minutes).
 
 ### Flood Detection (`flood_threshold`, `flood_window_seconds`)
 Sends an alert if more than `flood_threshold` connections arrive within `flood_window_seconds`. The Plex server's own IP and private/local IPs are excluded from flood counting to avoid false alerts from server self-connections and local traffic. Minimum threshold is 5. Default: 20 connections in 60 seconds.

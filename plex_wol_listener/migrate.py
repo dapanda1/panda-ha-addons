@@ -21,7 +21,7 @@ OPTIONS_PATH = "/data/options.json"
 SUPERVISOR_API = "http://supervisor/addons/self/options"
 SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN", "")
 
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
 # Keys: old field name → new field name (str) or None to drop.
 # Only add entries here when a field is renamed or removed.
@@ -30,6 +30,7 @@ CURRENT_SCHEMA_VERSION = 1
 #   "old_field_name": "new_field_name",       # renamed
 FIELD_MAP = {
     "enable_token_validation": None,
+    "nowake_exclude": "allow_ip_plex_relay",
 }
 
 

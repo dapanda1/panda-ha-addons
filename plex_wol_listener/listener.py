@@ -71,6 +71,35 @@ def log(msg):
 
 
 # ---------------------------------------------------------------------------
+# Log deduplication
+# ---------------------------------------------------------------------------
+class LogDedup:
+    """Suppresses repeated log messages from the same key for a cooldown period."""
+
+    def __init__(self, cooldown=300):
+        self.cooldown = cooldown  # seconds
+        self.last_logged = {}  # key -> timestamp
+        self.lock = threading.Lock()
+
+    def set_cooldown(self, cooldown):
+        self.cooldown = cooldown
+
+    def should_log(self, key):
+        """Returns True if this key hasn't been logged within the cooldown period."""
+        now = time.time()
+        with self.lock:
+            last = self.last_logged.get(key, 0)
+            if now - last >= self.cooldown:
+                self.last_logged[key] = now
+                return True
+            return False
+
+
+# Global instance — cooldown updated from config in main()
+wol_disabled_dedup = LogDedup()
+
+
+# ---------------------------------------------------------------------------
 # Home Assistant API helpers
 # ---------------------------------------------------------------------------
 def ha_api_post(endpoint, payload):
@@ -476,11 +505,55 @@ class IPBlocklist:
 class NoWakeList:
     """IPs that are proxied when the server is up but never trigger WoL when it's down."""
 
-    def __init__(self, enabled, nowake_str):
+    def __init__(self, enabled, nowake_str, auto_discover=False, admin_token="", exclude_str=""):
         self.enabled = enabled
         self.ips = set()
+        self.excluded = set()
         if nowake_str:
             self.ips = {ip.strip() for ip in nowake_str.split(",") if ip.strip()}
+        if exclude_str:
+            self.excluded = {ip.strip() for ip in exclude_str.split(",") if ip.strip()}
+
+        if auto_discover and admin_token:
+            self._discover_relay_ips(admin_token)
+
+        # Remove excluded IPs after all sources are merged
+        if self.excluded:
+            removed = self.ips & self.excluded
+            if removed:
+                self.ips -= removed
+                log(f"Allow wake override: removed {sorted(removed)} from no-wake list")
+
+    def _discover_relay_ips(self, admin_token):
+        """Query plex.tv for relay server IPs and add them to the no-wake list."""
+        try:
+            req = urllib.request.Request(
+                "https://plex.tv/api/v2/resources?includeRelay=1",
+                headers={
+                    "X-Plex-Token": admin_token,
+                    "Accept": "application/json",
+                },
+            )
+            # SSL context for plex.tv (normal verification)
+            resp = urllib.request.urlopen(req, timeout=10)
+            data = json.loads(resp.read().decode())
+
+            relay_ips = set()
+            for resource in data:
+                connections = resource.get("connections", [])
+                for conn in connections:
+                    if conn.get("relay"):
+                        addr = conn.get("address", "")
+                        if addr:
+                            relay_ips.add(addr)
+
+            if relay_ips:
+                self.ips.update(relay_ips)
+                log(f"No-wake auto-discover: found {len(relay_ips)} Plex relay IPs: {sorted(relay_ips)}")
+            else:
+                log("No-wake auto-discover: no relay IPs found")
+        except Exception as e:
+            log(f"No-wake auto-discover: failed to query plex.tv: {e}")
 
     def should_skip_wol(self, ip_str):
         if not self.enabled:
@@ -833,6 +906,8 @@ def load_options():
         "ip_blocklist": "",
         "enable_nowake_list": False,
         "nowake_list": "",
+        "auto_discover_plex_relays": False,
+        "allow_ip_plex_relay": "",
         "enable_sleep_trigger": False,
         "sleep_idle_minutes": 0,
         "max_awake_minutes": 0,
@@ -843,6 +918,7 @@ def load_options():
         "enable_ha_sensors": True,
         "enable_file_logging": True,
         "log_retention_days": 14,
+        "log_dedup_cooldown_seconds": 300,
         "enable_quiet_mode": False,
         "user_friendly_names": "",
         "enable_smart_wol": False,
@@ -1049,10 +1125,8 @@ def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
         sensors.set_server_status("up")
         burst_detector.reset()
     else:
-        # No-wake list: proxy when up, drop when down
+        # No-wake list: proxy when up, silently drop when down
         if nowake_list.should_skip_wol(client_ip):
-            if not quiet:
-                log(f"[{addr}] Server down — no-wake list, dropping connection")
             client_sock.close()
             return
 
@@ -1070,7 +1144,8 @@ def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
             elapsed = now - wol_state["last_wol"]
             if not wol_enabled:
                 reason = "config" if not wol_config_enabled else "dashboard toggle"
-                log(f"[{addr}]{user_tag} Server down — WoL disabled via {reason}, dropping connection")
+                if wol_disabled_dedup.should_log(client_ip):
+                    log(f"[{addr}]{user_tag} Server down — WoL disabled via {reason}, dropping connection (suppressing repeats for {wol_disabled_dedup.cooldown}s)")
                 client_sock.close()
                 return
             elif not burst_ok:
@@ -1165,7 +1240,10 @@ def main():
     flood_threshold = max(5, int(opts.get("flood_threshold", 10)))
     flood_window = int(opts.get("flood_window_seconds", 60))
 
-    log("=== Plex WoL Proxy v5.2.1 ===")
+    dedup_cooldown = int(opts.get("log_dedup_cooldown_seconds", 300))
+    wol_disabled_dedup.set_cooldown(dedup_cooldown)
+
+    log("=== Plex WoL Proxy v5.3.2 ===")
     log(f"  Listen:           0.0.0.0:{listen_port}")
     log(f"  Plex server:      {opts.get('plex_server_ip') or '(NOT SET)'}:{opts.get('plex_server_port', 32400)}")
     log(f"  Target MAC:       {opts.get('target_mac') or '(NOT SET)'}")
@@ -1180,6 +1258,8 @@ def main():
     log(f"  IP allowlist:     {'ON — ' + opts.get('ip_allowlist', '') if opts.get('enable_ip_allowlist') else 'OFF'}")
     log(f"  IP blocklist:     {'ON — ' + opts.get('ip_blocklist', '') if opts.get('enable_ip_blocklist') else 'OFF'}")
     log(f"  No-wake list:     {'ON — ' + opts.get('nowake_list', '') if opts.get('enable_nowake_list') else 'OFF'}")
+    log(f"  Relay auto-disc:  {'ON' if opts.get('auto_discover_plex_relays') else 'OFF'}")
+    log(f"  Log dedup:        {dedup_cooldown}s cooldown")
     log(f"  Sleep trigger:    {'ON — idle:' + str(opts.get('sleep_idle_minutes', 0)) + 'min, max awake:' + str(opts.get('max_awake_minutes', 0)) + 'min' if opts.get('enable_sleep_trigger') else 'OFF'}")
     log(f"  Health check:     {'ON — port ' + str(opts.get('health_check_port', 32401)) if opts.get('enable_health_check') else 'OFF'}")
     log(f"  HA sensors:       {'ON' if opts.get('enable_ha_sensors') else 'OFF'}")
@@ -1225,6 +1305,9 @@ def main():
     nowake_list = NoWakeList(
         bool(opts.get("enable_nowake_list", False)),
         str(opts.get("nowake_list", "")),
+        auto_discover=bool(opts.get("auto_discover_plex_relays", False)),
+        admin_token=str(opts.get("plex_admin_token", "")),
+        exclude_str=str(opts.get("allow_ip_plex_relay", "")),
     )
 
     sensors = HASensors(bool(opts.get("enable_ha_sensors", True)))

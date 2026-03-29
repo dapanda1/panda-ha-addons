@@ -1,5 +1,19 @@
 # Changelog
 
+## 5.3.2
+- Renamed `nowake_exclude` to `allow_ip_plex_relay` for clarity. Migration handles the rename automatically.
+
+## 5.3.1
+- Added no-wake exclusion list (`allow_ip_plex_relay`): comma-separated IPs to remove from the no-wake list, overriding both manual entries and auto-discovered relay IPs. Use to correct false flags from auto-discovery.
+
+## 5.3
+- Added configurable log dedup cooldown (`log_dedup_cooldown_seconds`): controls how long repeated "WoL disabled" messages are suppressed per IP. Default 300 seconds (5 min).
+- Added auto-discover Plex relay IPs (`auto_discover_plex_relays`): on startup, queries plex.tv for your server's relay IPs and adds them to the no-wake list automatically. Requires admin token and no-wake list enabled.
+
+## 5.2.2
+- No-wake list connections are now completely silent when the server is down — no log output at all
+- "WoL disabled, dropping connection" messages are now deduplicated per IP — logged once then suppressed for 5 minutes to reduce log noise from retrying clients
+
 ## 5.2.1
 - Fixed: when WoL is disabled (config or dashboard), connections are now dropped immediately instead of waiting 120 seconds for a server that will never wake
 

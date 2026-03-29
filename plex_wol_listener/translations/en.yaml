@@ -68,6 +68,12 @@ configuration:
   nowake_list:
     name: No-Wake IPs
     description: Comma-separated list of IPs that should not trigger WoL (e.g. 44.207.218.81).
+  auto_discover_plex_relays:
+    name: Auto-Discover Plex Relay IPs
+    description: On startup, queries plex.tv for your server's relay IPs and automatically adds them to the no-wake list. Requires the Plex admin token to be set and the no-wake list to be enabled.
+  allow_ip_plex_relay:
+    name: Allow Wake from Plex Relay IPs
+    description: Comma-separated IPs to exclude from the no-wake list. If auto-discovery incorrectly flags a Plex relay IP, add it here to allow it to wake the server normally.
   enable_sleep_trigger:
     name: Sleep Trigger
     description: Puts the Plex server to sleep via SSH after the configured idle time or max awake time. Requires OpenSSH Server installed on the Plex server. Can be toggled live from the HA dashboard.
@@ -101,6 +107,9 @@ configuration:
   log_retention_days:
     name: Log Retention (days)
     description: Number of days to keep log files before automatic deletion. Default 14.
+  log_dedup_cooldown_seconds:
+    name: Log Dedup Cooldown (seconds)
+    description: When repeated messages are suppressed (e.g. "WoL disabled, dropping connection"), this controls how many seconds before the same message is shown again for the same IP. Default 300 (5 minutes).
   enable_quiet_mode:
     name: Quiet Mode
     description: Hides routine "Server already up" and "Connection closed" log messages. WoL events, errors, timeouts, and alerts are always shown. Can be toggled live from the HA dashboard.
