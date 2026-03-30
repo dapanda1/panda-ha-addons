@@ -520,39 +520,143 @@ class IPBlocklist:
 class NoWakeList:
     """IPs that are proxied when the server is up but never trigger WoL when it's down."""
 
-    def __init__(self, enabled, nowake_str, auto_discover=False, admin_token="", exclude_str=""):
+    LEARNED_FILE = "/data/learned_nowake.json"
+
+    def __init__(self, enabled, nowake_str, auto_discover=False, admin_token="",
+                 exclude_str="", rediscover_hours=6):
         self.enabled = enabled
         self.ips = set()
-        self.excluded = set()
+        self.exclude_entries = []  # raw strings for CIDR + IP matching
+        self.exclude_networks = []  # parsed CIDR networks
+        self.exclude_ips = set()  # parsed single IPs
+        self.admin_token = admin_token
+        self.auto_discover = auto_discover
+        self.lock = threading.Lock()
+
         if nowake_str:
             self.ips = {ip.strip() for ip in nowake_str.split(",") if ip.strip()}
+
+        # Parse exclude list — supports both IPs and CIDR
         if exclude_str:
-            self.excluded = {ip.strip() for ip in exclude_str.split(",") if ip.strip()}
+            for entry in exclude_str.split(","):
+                entry = entry.strip()
+                if not entry:
+                    continue
+                self.exclude_entries.append(entry)
+                try:
+                    if "/" in entry:
+                        self.exclude_networks.append(ipaddress.ip_network(entry, strict=False))
+                    else:
+                        self.exclude_ips.add(entry)
+                except Exception:
+                    self.exclude_ips.add(entry)
+
+        # Load previously learned IPs
+        self._load_learned()
 
         if auto_discover and admin_token:
-            self._discover_relay_ips(admin_token)
+            self._discover_relay_ips()
 
-        # Remove excluded IPs after all sources are merged
-        if self.excluded:
-            removed = self.ips & self.excluded
+        # Apply exclusions
+        self._apply_exclusions()
+
+        # Start periodic re-discovery
+        if auto_discover and admin_token and rediscover_hours > 0:
+            def _periodic():
+                while True:
+                    time.sleep(rediscover_hours * 3600)
+                    log(f"No-wake: periodic re-discovery running")
+                    self._discover_relay_ips()
+                    self._apply_exclusions()
+                    log(f"No-wake active: {self.get_active_ips()}")
+            t = threading.Thread(target=_periodic, daemon=True)
+            t.start()
+
+    def _is_excluded(self, ip_str):
+        """Check if an IP is in the exclusion list (exact or CIDR)."""
+        if ip_str in self.exclude_ips:
+            return True
+        try:
+            addr = ipaddress.ip_address(ip_str)
+            for net in self.exclude_networks:
+                if addr in net:
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _apply_exclusions(self):
+        """Remove excluded IPs from the no-wake list."""
+        with self.lock:
+            removed = {ip for ip in self.ips if self._is_excluded(ip)}
             if removed:
                 self.ips -= removed
                 log(f"Allow wake override: removed {sorted(removed)} from no-wake list")
 
-    def _discover_relay_ips(self, admin_token):
+    def _load_learned(self):
+        """Load learned no-wake IPs from persistent file."""
+        try:
+            with open(self.LEARNED_FILE, "r") as f:
+                data = json.load(f)
+                learned = set(data.get("ips", []))
+                if learned:
+                    self.ips.update(learned)
+                    log(f"No-wake learned: loaded {len(learned)} IPs from {self.LEARNED_FILE}")
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            log(f"No-wake learned: failed to load {self.LEARNED_FILE}: {e}")
+
+    def _save_learned(self, learned_ips):
+        """Save learned no-wake IPs to persistent file."""
+        try:
+            with open(self.LEARNED_FILE, "w") as f:
+                json.dump({"ips": sorted(learned_ips), "updated": time.strftime("%Y-%m-%d %H:%M:%S")}, f, indent=2)
+        except Exception as e:
+            log(f"No-wake learned: failed to save: {e}")
+
+    def learn(self, ip_str):
+        """Learn a new no-wake IP. Returns True if newly added."""
+        if not self.enabled:
+            return False
+        if self._is_excluded(ip_str):
+            return False
+        try:
+            if ipaddress.ip_address(ip_str).is_private:
+                return False
+        except Exception:
+            pass
+
+        with self.lock:
+            if ip_str in self.ips:
+                return False
+            self.ips.add(ip_str)
+            log(f"No-wake learned: added {ip_str}")
+
+            # Load existing, merge, save
+            try:
+                with open(self.LEARNED_FILE, "r") as f:
+                    data = json.load(f)
+                    existing = set(data.get("ips", []))
+            except Exception:
+                existing = set()
+            existing.add(ip_str)
+            self._save_learned(existing)
+            return True
+
+    def _discover_relay_ips(self):
         """Query plex.tv for relay server IPs and add them to the no-wake list."""
         try:
             req = urllib.request.Request(
                 "https://plex.tv/api/v2/resources?includeRelay=1",
                 headers={
-                    "X-Plex-Token": admin_token,
+                    "X-Plex-Token": self.admin_token,
                     "X-Plex-Client-Identifier": "plex-wol-listener",
                     "X-Plex-Product": "Plex WoL Listener",
                     "X-Plex-Version": VERSION,
                     "Accept": "application/json",
                 },
             )
-            # SSL context for plex.tv (normal verification)
             resp = urllib.request.urlopen(req, timeout=10)
             data = json.loads(resp.read().decode())
 
@@ -566,7 +670,8 @@ class NoWakeList:
                             relay_ips.add(addr)
 
             if relay_ips:
-                self.ips.update(relay_ips)
+                with self.lock:
+                    self.ips.update(relay_ips)
                 log(f"No-wake auto-discover: found {len(relay_ips)} Plex relay IPs: {sorted(relay_ips)}")
             else:
                 log("No-wake auto-discover: no relay IPs found")
@@ -576,10 +681,12 @@ class NoWakeList:
     def should_skip_wol(self, ip_str):
         if not self.enabled:
             return False
-        return ip_str in self.ips
+        with self.lock:
+            return ip_str in self.ips
 
     def get_active_ips(self):
-        return sorted(self.ips)
+        with self.lock:
+            return sorted(self.ips)
 
 
 # ---------------------------------------------------------------------------
@@ -928,6 +1035,8 @@ def load_options():
         "enable_nowake_list": False,
         "nowake_list": "",
         "auto_discover_plex_relays": False,
+        "relay_rediscover_hours": 6,
+        "infra_learn_threshold": 5,
         "allow_ip_plex_relay": "",
         "enable_sleep_trigger": False,
         "sleep_idle_minutes": 0,
@@ -1019,6 +1128,56 @@ def wait_for_server(ip, port, timeout):
 
 
 # ---------------------------------------------------------------------------
+# Infrastructure IP auto-learning (server-up detection)
+# ---------------------------------------------------------------------------
+class InfrastructureLearner:
+    """Learns infrastructure IPs by tracking connections that don't appear in sessions."""
+
+    def __init__(self, enabled, session_tracker, nowake_list, threshold=5):
+        self.enabled = enabled and session_tracker.enabled
+        self.session_tracker = session_tracker
+        self.nowake_list = nowake_list
+        self.threshold = threshold  # non-session connections before learning
+        self.hit_counts = {}  # ip -> count
+        self.lock = threading.Lock()
+
+    def check(self, client_ip):
+        """Call after a proxied connection closes. Checks sessions in background."""
+        if not self.enabled:
+            return
+        try:
+            if ipaddress.ip_address(client_ip).is_private:
+                return
+        except Exception:
+            return
+        # Already known
+        if self.nowake_list.should_skip_wol(client_ip):
+            return
+
+        def _check():
+            users = self.session_tracker.get_active_users()
+            # If there are no sessions at all, we can't determine anything
+            # (server might just be idle)
+            # Only learn if there ARE active sessions but this IP isn't in one
+            if not users:
+                return
+
+            # Check if any session's IP matches — sessions don't expose IPs directly,
+            # so we rely on: if sessions exist and this IP connected briefly without
+            # generating a session, it's likely infrastructure
+            with self.lock:
+                count = self.hit_counts.get(client_ip, 0) + 1
+                self.hit_counts[client_ip] = count
+
+            if count >= self.threshold:
+                self.nowake_list.learn(client_ip)
+                with self.lock:
+                    self.hit_counts.pop(client_ip, None)
+
+        threading.Thread(target=_check, daemon=True).start()
+
+
+# ---------------------------------------------------------------------------
 # Graceful shutdown
 # ---------------------------------------------------------------------------
 class ConnectionTracker:
@@ -1070,21 +1229,22 @@ def shutdown_handler(signum, frame):
 # Client handler
 # ---------------------------------------------------------------------------
 def handle_client(client_sock, addr, opts, wol_state, flood, geoip, allowlist, blocklist,
-                  sensors, sleeper, toggles, session_tracker, conn_history, burst_detector, nowake_list, name_map):
+                  sensors, sleeper, toggles, session_tracker, conn_history, burst_detector,
+                  nowake_list, name_map, infra_learner):
     # Track connection
     connection_tracker.add(client_sock)
 
     try:
         _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
                              allowlist, blocklist, sensors, sleeper, toggles, session_tracker,
-                             conn_history, burst_detector, nowake_list, name_map)
+                             conn_history, burst_detector, nowake_list, name_map, infra_learner)
     finally:
         connection_tracker.remove(client_sock)
 
 
 def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
                          allowlist, blocklist, sensors, sleeper, toggles, session_tracker,
-                         conn_history, burst_detector, nowake_list, name_map):
+                         conn_history, burst_detector, nowake_list, name_map, infra_learner):
     # Flood detection
     flood.record(addr)
 
@@ -1174,6 +1334,8 @@ def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
                 count = burst_detector.get_count()
                 log(f"[{addr}]{user_tag} Server down — background poll ignored by smart WoL "
                     f"({count}/{burst_detector.burst_count} connections in window)")
+                # Auto-learn: single probes while server is down are infrastructure
+                nowake_list.learn(client_ip)
                 client_sock.close()
                 return
             elif target_mac and elapsed >= rate_limit:
@@ -1234,6 +1396,10 @@ def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
     connection_tracker.remove(upstream)
     if not quiet:
         log(f"[{addr}]{user_tag} Connection closed.")
+
+    # Auto-learn infrastructure IPs when server is up
+    if server_already_up:
+        infra_learner.check(client_ip)
 
     # Touch sleep trigger when connection ends too
     if sleeper:
@@ -1379,6 +1545,7 @@ def main():
         auto_discover=bool(opts.get("auto_discover_plex_relays", False)),
         admin_token=str(opts.get("plex_admin_token", "")),
         exclude_str=str(opts.get("allow_ip_plex_relay", "")),
+        rediscover_hours=int(opts.get("relay_rediscover_hours", 6)),
     )
     if nowake_list.enabled:
         active = nowake_list.get_active_ips()
@@ -1395,6 +1562,13 @@ def main():
         server_ip=str(opts.get("plex_server_ip", "")),
         server_port=int(opts.get("plex_server_port", 32400)),
         admin_token=str(opts.get("plex_admin_token", "")),
+    )
+
+    infra_learner = InfrastructureLearner(
+        enabled=bool(opts.get("enable_nowake_list", False)),
+        session_tracker=session_tracker,
+        nowake_list=nowake_list,
+        threshold=int(opts.get("infra_learn_threshold", 5)),
     )
 
     burst_detector = BurstDetector(
@@ -1441,7 +1615,8 @@ def main():
         t = threading.Thread(
             target=handle_client,
             args=(client_sock, addr, opts, wol_state, flood, geoip, allowlist, blocklist,
-                  sensors, sleeper, toggles, session_tracker, conn_history, burst_detector, nowake_list, name_map),
+                  sensors, sleeper, toggles, session_tracker, conn_history, burst_detector,
+                  nowake_list, name_map, infra_learner),
             daemon=True,
         )
         t.start()

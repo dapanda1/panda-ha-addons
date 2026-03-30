@@ -8,6 +8,20 @@
 - Added `.gitignore` for GitHub publishing
 - **Breaking for existing users**: notification target is now configurable via `notify_target` instead of hardcoded. Set it to your HA notify service (e.g. `mobile_app_pixel_10_pro`). Leave empty for persistent notifications only.
 
+## 5.4
+- Removed unused `urllib.parse` import
+- Centralized version string into `VERSION` constant
+- GeoIP cache now expires entries after 24 hours
+- Confirmed admin token is never logged
+- Added `.gitignore` for GitHub publishing
+- Notification target now configurable via `notify_target` — no longer hardcoded
+- Switched GeoIP to ipapi.co (HTTPS)
+- Persistent auto-learning: IPs that fail burst detection are saved to `/data/learned_nowake.json` and loaded on every restart
+- Session-based learning: when user tracking is on, public IPs that connect repeatedly without appearing in active sessions are auto-learned as infrastructure
+- Periodic relay re-discovery (`relay_rediscover_hours`): re-queries plex.tv on a timer, not just at startup. Default 6 hours.
+- `allow_ip_plex_relay` now supports CIDR notation (e.g. `34.0.0.0/8`) in addition to single IPs
+- New config option `infra_learn_threshold`: number of non-session connections before an IP is auto-learned. Default 5.
+
 ## 5.3.7
 - Switched GeoIP provider from ip-api.com (HTTP) to ipapi.co (HTTPS). All external requests now use encrypted connections. Free tier, no API key, 1000 lookups/day.
 

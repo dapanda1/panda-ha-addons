@@ -68,10 +68,16 @@ Only allows connections from specific IPs listed in `ip_allowlist` (comma-separa
 Drops connections from specific IPs listed in `ip_blocklist` (comma-separated). Blocklist is checked before allowlist and GeoIP, so blocked IPs are always rejected regardless of other settings. Use this to ban known scanners or abusive clients. Default: disabled.
 
 ### No-Wake List (`enable_nowake_list`)
-IPs listed in `nowake_list` are proxied normally when the server is up, but if the server is down their connections are silently dropped instead of triggering WoL. Use for plex.tv cloud health-check IPs and relay servers. Default: disabled.
+IPs listed in `nowake_list` are proxied normally when the server is up, but if the server is down their connections are silently dropped instead of triggering WoL. The list is built from three sources: manual entries, auto-discovered relay IPs, and auto-learned infrastructure IPs (saved to `/data/learned_nowake.json`). Default: disabled.
 
 ### Auto-Discover Plex Relay IPs (`auto_discover_plex_relays`)
-On startup, queries plex.tv for your server's relay server IPs and automatically adds them to the no-wake list. Requires `plex_admin_token` and `enable_nowake_list` to both be set. Discovered IPs are logged at startup. If an auto-discovered IP is incorrectly flagged, add it to `allow_ip_plex_relay` to override. Default: disabled.
+Queries plex.tv for your server's relay server IPs and adds them to the no-wake list. Runs at startup and periodically based on `relay_rediscover_hours` (default 6). Requires `plex_admin_token` and `enable_nowake_list` to both be set. If an auto-discovered IP is incorrectly flagged, add it to `allow_ip_plex_relay` to override. Default: disabled.
+
+### Infrastructure Auto-Learning
+When smart WoL is enabled and the server is down, IPs that send single probes (failing burst detection) are automatically learned as infrastructure and added to the no-wake list. When user tracking is enabled and the server is up, IPs that connect repeatedly without appearing in active sessions are also learned. Learned IPs persist across restarts in `/data/learned_nowake.json`. Configurable via `infra_learn_threshold` (default 5 non-session hits).
+
+### Allow Wake Override (`allow_ip_plex_relay`)
+Comma-separated IPs or CIDR ranges (e.g. `34.0.0.0/8,198.27.160.147`) to exclude from the no-wake list. Overrides manual entries, auto-discovered relay IPs, and auto-learned IPs. Use to correct false positives.
 
 ### Log Dedup Cooldown (`log_dedup_cooldown_seconds`)
 Controls how long repeated "WoL disabled, dropping connection" messages are suppressed per IP. After logging once, the same IP's drops are silent for this many seconds. Default: 300 (5 minutes).
