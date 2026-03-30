@@ -1,12 +1,16 @@
 # Changelog
 
-## 5.4
-- Removed unused `urllib.parse` import
-- Centralized version string into `VERSION` constant used in headers and startup log
-- GeoIP cache now expires entries after 24 hours and prunes on each lookup
-- Confirmed admin token is never logged — only field name appears in log messages
-- Added `.gitignore` for GitHub publishing
-- **Breaking for existing users**: notification target is now configurable via `notify_target` instead of hardcoded. Set it to your HA notify service (e.g. `mobile_app_pixel_10_pro`). Leave empty for persistent notifications only.
+## 5.4.3
+- Burst detection and auto-learning now run before the WoL enabled check. You can disable WoL, leave the server asleep, and the add-on will still learn infrastructure IPs from single probes. Turn WoL back on when ready — learned IPs are already on the no-wake list.
+
+## 5.4.2
+- Removed server-up infrastructure learning (`InfrastructureLearner`) — unreliable since session API can't match source IPs through the proxy, causing real users to be incorrectly flagged
+- Removed `infra_learn_threshold` and `infra_learn_window_hours` config options
+- Server-down auto-learning (single probe = infrastructure) remains — this is reliable
+- Migration schema bumped to v3 to clean up removed fields
+
+## 5.4.1
+- Infrastructure auto-learning now uses a time window (`infra_learn_window_hours`, default 24). Hits older than the window are discarded. An IP must reach the threshold within the window to be learned, preventing infrequent legitimate users from being incorrectly flagged.
 
 ## 5.4
 - Removed unused `urllib.parse` import

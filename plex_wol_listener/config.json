@@ -1,6 +1,6 @@
 {
   "name": "Plex WoL Listener",
-  "version": "5.4",
+  "version": "5.4.3",
   "slug": "plex_wol_listener",
   "description": "Proxies Plex traffic, wakes server via WoL, auto-sleeps on idle, Plex token validation, GeoIP blocking, flood detection, HA sensors, dashboard toggles, and notifications",
   "arch": ["aarch64", "amd64"],
@@ -32,7 +32,6 @@
     "nowake_list": "",
     "auto_discover_plex_relays": false,
     "relay_rediscover_hours": 6,
-    "infra_learn_threshold": 5,
     "allow_ip_plex_relay": "",
     "enable_sleep_trigger": false,
     "sleep_idle_minutes": 0,
@@ -76,7 +75,6 @@
     "nowake_list": "str?",
     "auto_discover_plex_relays": "bool",
     "relay_rediscover_hours": "int",
-    "infra_learn_threshold": "int",
     "allow_ip_plex_relay": "str?",
     "enable_sleep_trigger": "bool",
     "sleep_idle_minutes": "int",

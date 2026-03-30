@@ -74,9 +74,6 @@ configuration:
   relay_rediscover_hours:
     name: Relay Rediscovery Interval (hours)
     description: How often to re-query plex.tv for updated relay IPs. Default 6 hours. Set to 0 to only discover at startup.
-  infra_learn_threshold:
-    name: Infrastructure Learn Threshold
-    description: Number of non-session connections from the same public IP before it's auto-learned as infrastructure and added to the no-wake list. Only applies when user tracking is enabled. Default 5.
   allow_ip_plex_relay:
     name: Allow Wake from Plex Relay IPs
     description: "Comma-separated IPs or CIDR ranges to exclude from the no-wake list (e.g. 34.0.0.0/8,198.27.160.147). Overrides auto-discovered, learned, and manual no-wake entries. Learned IPs are stored in /data/learned_nowake.json and persist across restarts. Check the add-on log at startup to see the full active no-wake list."

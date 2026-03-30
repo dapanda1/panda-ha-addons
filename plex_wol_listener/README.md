@@ -74,7 +74,7 @@ IPs listed in `nowake_list` are proxied normally when the server is up, but if t
 Queries plex.tv for your server's relay server IPs and adds them to the no-wake list. Runs at startup and periodically based on `relay_rediscover_hours` (default 6). Requires `plex_admin_token` and `enable_nowake_list` to both be set. If an auto-discovered IP is incorrectly flagged, add it to `allow_ip_plex_relay` to override. Default: disabled.
 
 ### Infrastructure Auto-Learning
-When smart WoL is enabled and the server is down, IPs that send single probes (failing burst detection) are automatically learned as infrastructure and added to the no-wake list. When user tracking is enabled and the server is up, IPs that connect repeatedly without appearing in active sessions are also learned. Learned IPs persist across restarts in `/data/learned_nowake.json`. Configurable via `infra_learn_threshold` (default 5 non-session hits).
+When smart WoL is enabled and the server is down, IPs that send single probes (failing burst detection) are automatically learned as infrastructure and added to the no-wake list. Learned IPs persist across restarts in `/data/learned_nowake.json`.
 
 ### Allow Wake Override (`allow_ip_plex_relay`)
 Comma-separated IPs or CIDR ranges (e.g. `34.0.0.0/8,198.27.160.147`) to exclude from the no-wake list. Overrides manual entries, auto-discovered relay IPs, and auto-learned IPs. Use to correct false positives.

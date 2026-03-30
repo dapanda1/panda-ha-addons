@@ -32,7 +32,7 @@ import time
 import urllib.request
 
 OPTIONS_PATH = "/data/options.json"
-VERSION = "5.4"
+VERSION = "5.4.3"
 PROXY_BUF = 65536
 CONNECT_POLL_INTERVAL = 2
 SSH_KEY_PATH = "/data/plex_wol_key"
@@ -1036,7 +1036,6 @@ def load_options():
         "nowake_list": "",
         "auto_discover_plex_relays": False,
         "relay_rediscover_hours": 6,
-        "infra_learn_threshold": 5,
         "allow_ip_plex_relay": "",
         "enable_sleep_trigger": False,
         "sleep_idle_minutes": 0,
@@ -1127,55 +1126,6 @@ def wait_for_server(ip, port, timeout):
     return False
 
 
-# ---------------------------------------------------------------------------
-# Infrastructure IP auto-learning (server-up detection)
-# ---------------------------------------------------------------------------
-class InfrastructureLearner:
-    """Learns infrastructure IPs by tracking connections that don't appear in sessions."""
-
-    def __init__(self, enabled, session_tracker, nowake_list, threshold=5):
-        self.enabled = enabled and session_tracker.enabled
-        self.session_tracker = session_tracker
-        self.nowake_list = nowake_list
-        self.threshold = threshold  # non-session connections before learning
-        self.hit_counts = {}  # ip -> count
-        self.lock = threading.Lock()
-
-    def check(self, client_ip):
-        """Call after a proxied connection closes. Checks sessions in background."""
-        if not self.enabled:
-            return
-        try:
-            if ipaddress.ip_address(client_ip).is_private:
-                return
-        except Exception:
-            return
-        # Already known
-        if self.nowake_list.should_skip_wol(client_ip):
-            return
-
-        def _check():
-            users = self.session_tracker.get_active_users()
-            # If there are no sessions at all, we can't determine anything
-            # (server might just be idle)
-            # Only learn if there ARE active sessions but this IP isn't in one
-            if not users:
-                return
-
-            # Check if any session's IP matches — sessions don't expose IPs directly,
-            # so we rely on: if sessions exist and this IP connected briefly without
-            # generating a session, it's likely infrastructure
-            with self.lock:
-                count = self.hit_counts.get(client_ip, 0) + 1
-                self.hit_counts[client_ip] = count
-
-            if count >= self.threshold:
-                self.nowake_list.learn(client_ip)
-                with self.lock:
-                    self.hit_counts.pop(client_ip, None)
-
-        threading.Thread(target=_check, daemon=True).start()
-
 
 # ---------------------------------------------------------------------------
 # Graceful shutdown
@@ -1230,21 +1180,21 @@ def shutdown_handler(signum, frame):
 # ---------------------------------------------------------------------------
 def handle_client(client_sock, addr, opts, wol_state, flood, geoip, allowlist, blocklist,
                   sensors, sleeper, toggles, session_tracker, conn_history, burst_detector,
-                  nowake_list, name_map, infra_learner):
+                  nowake_list, name_map):
     # Track connection
     connection_tracker.add(client_sock)
 
     try:
         _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
                              allowlist, blocklist, sensors, sleeper, toggles, session_tracker,
-                             conn_history, burst_detector, nowake_list, name_map, infra_learner)
+                             conn_history, burst_detector, nowake_list, name_map)
     finally:
         connection_tracker.remove(client_sock)
 
 
 def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
                          allowlist, blocklist, sensors, sleeper, toggles, session_tracker,
-                         conn_history, burst_detector, nowake_list, name_map, infra_learner):
+                         conn_history, burst_detector, nowake_list, name_map):
     # Flood detection
     flood.record(addr)
 
@@ -1312,13 +1262,23 @@ def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
             client_sock.close()
             return
 
-        # Check if WoL is enabled via dashboard toggle
+        # Smart WoL: check for connection burst — runs regardless of WoL toggle
+        # so that learning always works even in test mode
+        burst_ok = burst_detector.record_and_check()
+
+        if not burst_ok:
+            count = burst_detector.get_count()
+            log(f"[{addr}]{user_tag} Server down — background poll ignored by smart WoL "
+                f"({count}/{burst_detector.burst_count} connections in window)")
+            # Auto-learn: single probes while server is down are infrastructure
+            nowake_list.learn(client_ip)
+            client_sock.close()
+            return
+
+        # Check if WoL is enabled via config and dashboard toggle
         wol_config_enabled = bool(opts.get("enable_wol", True))
         wol_dashboard_enabled = toggles.get_wol() if toggles.enabled else True
         wol_enabled = wol_config_enabled and wol_dashboard_enabled
-
-        # Smart WoL: check for connection burst before sending WoL
-        burst_ok = burst_detector.record_and_check()
 
         sensors.set_server_status("waking")
         now = time.time()
@@ -1328,14 +1288,6 @@ def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
                 reason = "config" if not wol_config_enabled else "dashboard toggle"
                 if wol_disabled_dedup.should_log(client_ip):
                     log(f"[{addr}]{user_tag} Server down — WoL disabled via {reason}, dropping connection (suppressing repeats for {wol_disabled_dedup.cooldown}s)")
-                client_sock.close()
-                return
-            elif not burst_ok:
-                count = burst_detector.get_count()
-                log(f"[{addr}]{user_tag} Server down — background poll ignored by smart WoL "
-                    f"({count}/{burst_detector.burst_count} connections in window)")
-                # Auto-learn: single probes while server is down are infrastructure
-                nowake_list.learn(client_ip)
                 client_sock.close()
                 return
             elif target_mac and elapsed >= rate_limit:
@@ -1396,10 +1348,6 @@ def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
     connection_tracker.remove(upstream)
     if not quiet:
         log(f"[{addr}]{user_tag} Connection closed.")
-
-    # Auto-learn infrastructure IPs when server is up
-    if server_already_up:
-        infra_learner.check(client_ip)
 
     # Touch sleep trigger when connection ends too
     if sleeper:
@@ -1564,13 +1512,6 @@ def main():
         admin_token=str(opts.get("plex_admin_token", "")),
     )
 
-    infra_learner = InfrastructureLearner(
-        enabled=bool(opts.get("enable_nowake_list", False)),
-        session_tracker=session_tracker,
-        nowake_list=nowake_list,
-        threshold=int(opts.get("infra_learn_threshold", 5)),
-    )
-
     burst_detector = BurstDetector(
         enabled=bool(opts.get("enable_smart_wol", False)),
         burst_count=int(opts.get("smart_wol_burst_count", 3)),
@@ -1616,7 +1557,7 @@ def main():
             target=handle_client,
             args=(client_sock, addr, opts, wol_state, flood, geoip, allowlist, blocklist,
                   sensors, sleeper, toggles, session_tracker, conn_history, burst_detector,
-                  nowake_list, name_map, infra_learner),
+                  nowake_list, name_map),
             daemon=True,
         )
         t.start()
