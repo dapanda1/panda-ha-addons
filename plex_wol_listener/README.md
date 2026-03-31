@@ -104,8 +104,8 @@ Exposes sensors in Home Assistant:
 - `sensor.plex_wol_connection_count` — total connections since add-on start
 - `sensor.plex_wol_unique_ips_today` — unique IPs that connected today (resets daily)
 
-### Dashboard Toggles (`enable_dashboard_toggles`)
-Creates real `input_boolean` helper entities in HA for live control of WoL, GeoIP, quiet mode, and sleep trigger from the Lovelace dashboard. Toggles persist across HA restarts, have unique IDs, and respond to UI clicks immediately. The add-on polls them every 5 seconds. Default: enabled.
+### Dashboard Toggles
+Feature toggles are managed via the health check HTTP endpoint on port 32401 and persisted to `/data/toggles.json`. Available toggles: `wol`, `geoip`, `quiet`, `sleep`. The dashboard card uses HA `rest_command` to call these endpoints. See `dashboard_card.yaml` for setup instructions including the required `rest_command` entries for `configuration.yaml`.
 - `input_boolean.plex_wol_geoip` — enable/disable GeoIP blocking
 - `input_boolean.plex_wol_quiet_mode` — enable/disable quiet mode
 - `input_boolean.plex_wol_sleep_trigger` — enable/disable sleep trigger

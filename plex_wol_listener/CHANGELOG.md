@@ -1,5 +1,12 @@
 # Changelog
 
+## 5.4.5
+- Replaced `DashboardToggles` (broken fake state entities) with `ToggleManager` — file-persisted toggles in `/data/toggles.json`, no HA helper entities needed
+- Rewrote health check HTTP server with full routing: `GET /status`, `GET /toggles`, `POST /toggle/<n>`, `POST /toggle/<n>/on|off`. CORS headers included.
+- Dashboard card now uses `rest_command` calls to toggle features via the health check port (32401). Requires adding `rest_command` entries to HA `configuration.yaml` — see `dashboard_card.yaml` for setup instructions.
+- Removed `enable_dashboard_toggles` config option — toggles are always available via the health check endpoint
+- Toggle states persist across restarts in `/data/toggles.json`
+
 ## 5.4.4
 - Rewrote dashboard toggles to use real `input_boolean` helpers via HA's config API instead of fake state entities. Toggles now have unique IDs, persist across HA restarts, and respond properly to UI clicks. Delete any old "no unique ID" entities after upgrading.
 

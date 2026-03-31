@@ -30,6 +30,7 @@ FIELD_MAP = {
     "nowake_exclude": "allow_ip_plex_relay",
     "infra_learn_threshold": None,
     "infra_learn_window_hours": None,
+    "enable_dashboard_toggles": None,
 }
 
 

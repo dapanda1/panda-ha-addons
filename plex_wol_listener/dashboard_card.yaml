@@ -1,10 +1,28 @@
 # Plex WoL Dashboard Card
 #
-# Add this to your Lovelace dashboard:
-# 1. Go to your HA dashboard
-# 2. Click the 3-dot menu → Edit Dashboard
-# 3. Click "+ Add Card" → Manual
-# 4. Paste the YAML below
+# SETUP:
+# 1. Add the following rest_command entries to your HA configuration.yaml:
+#
+#    rest_command:
+#      plex_wol_toggle_wol:
+#        url: "http://localhost:32401/toggle/wol"
+#        method: POST
+#      plex_wol_toggle_geoip:
+#        url: "http://localhost:32401/toggle/geoip"
+#        method: POST
+#      plex_wol_toggle_quiet:
+#        url: "http://localhost:32401/toggle/quiet"
+#        method: POST
+#      plex_wol_toggle_sleep:
+#        url: "http://localhost:32401/toggle/sleep"
+#        method: POST
+#
+# 2. Restart HA after editing configuration.yaml
+# 3. Add the card below to your Lovelace dashboard:
+#    - Go to your HA dashboard
+#    - Click the 3-dot menu → Edit Dashboard
+#    - Click "+ Add Card" → Manual
+#    - Paste the YAML below
 
 type: vertical-stack
 cards:
@@ -32,22 +50,41 @@ cards:
         name: Unique IPs Today
         icon: mdi:ip-network
 
-  # Toggle controls
-  - type: entities
-    title: Controls
-    entities:
-      - entity: input_boolean.plex_wol_enabled
-        name: WoL Enabled
+  # Toggle controls (calls REST endpoint on health check port)
+  - type: horizontal-stack
+    cards:
+      - type: button
+        name: WoL
         icon: mdi:power
-      - entity: input_boolean.plex_wol_geoip
-        name: GeoIP Blocking
+        tap_action:
+          action: call-service
+          service: rest_command.plex_wol_toggle_wol
+        hold_action:
+          action: none
+      - type: button
+        name: GeoIP
         icon: mdi:earth
-      - entity: input_boolean.plex_wol_quiet_mode
-        name: Quiet Mode
+        tap_action:
+          action: call-service
+          service: rest_command.plex_wol_toggle_geoip
+        hold_action:
+          action: none
+      - type: button
+        name: Quiet
         icon: mdi:volume-off
-      - entity: input_boolean.plex_wol_sleep_trigger
-        name: Sleep Trigger
+        tap_action:
+          action: call-service
+          service: rest_command.plex_wol_toggle_quiet
+        hold_action:
+          action: none
+      - type: button
+        name: Sleep
         icon: mdi:sleep
+        tap_action:
+          action: call-service
+          service: rest_command.plex_wol_toggle_sleep
+        hold_action:
+          action: none
 
   # History graph for connections
   - type: history-graph

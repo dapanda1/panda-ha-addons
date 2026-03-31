@@ -269,133 +269,87 @@ class ConnectionHistory:
 # ---------------------------------------------------------------------------
 # HA Dashboard toggles
 # ---------------------------------------------------------------------------
-class DashboardToggles:
-    """Creates real input_boolean helpers for live dashboard control."""
+class ToggleManager:
+    """Manages feature toggles with file persistence. Controlled via health check HTTP endpoint."""
 
-    TOGGLES = {
-        "plex_wol_enabled": ("Plex WoL: WoL Enabled", "mdi:power"),
-        "plex_wol_geoip": ("Plex WoL: GeoIP Blocking", "mdi:earth"),
-        "plex_wol_quiet_mode": ("Plex WoL: Quiet Mode", "mdi:volume-off"),
-        "plex_wol_sleep_trigger": ("Plex WoL: Sleep Trigger", "mdi:sleep"),
-    }
+    TOGGLES_FILE = "/data/toggles.json"
 
-    def __init__(self, enabled, initial_wol, initial_geoip, initial_quiet, initial_sleep):
-        self.enabled = enabled
-        self.wol = initial_wol
-        self.geoip = initial_geoip
-        self.quiet = initial_quiet
-        self.sleep = initial_sleep
+    def __init__(self, initial_wol, initial_geoip, initial_quiet, initial_sleep):
+        self.enabled = True  # always available
         self.lock = threading.Lock()
-
-        if not enabled:
-            return
-
-        initials = {
-            "plex_wol_enabled": initial_wol,
-            "plex_wol_geoip": initial_geoip,
-            "plex_wol_quiet_mode": initial_quiet,
-            "plex_wol_sleep_trigger": initial_sleep,
+        self.state = {
+            "wol": initial_wol,
+            "geoip": initial_geoip,
+            "quiet": initial_quiet,
+            "sleep": initial_sleep,
         }
+        self._load()
+        log(f"Toggles: wol={'ON' if self.state['wol'] else 'OFF'} "
+            f"geoip={'ON' if self.state['geoip'] else 'OFF'} "
+            f"quiet={'ON' if self.state['quiet'] else 'OFF'} "
+            f"sleep={'ON' if self.state['sleep'] else 'OFF'}")
 
-        # Create real input_boolean helpers via config API
-        for obj_id, (name, icon) in self.TOGGLES.items():
-            self._ensure_helper(obj_id, name, icon)
-
-        # Set initial states
-        for obj_id, initial in initials.items():
-            entity_id = f"input_boolean.{obj_id}"
-            service = "turn_on" if initial else "turn_off"
-            # Only set initial state if the entity is currently unknown
-            current = ha_api_get(f"/states/{entity_id}")
-            if not current or current.get("state") in (None, "unknown", "unavailable"):
-                ha_api_post(f"/services/input_boolean/{service}", {
-                    "entity_id": entity_id,
-                })
-
-        # Start polling thread
-        t = threading.Thread(target=self._poll_loop, daemon=True)
-        t.start()
-        log("Dashboard toggles: enabled (real input_boolean helpers)")
-
-    def _ensure_helper(self, obj_id, name, icon):
-        """Create input_boolean helper via HA config API if it doesn't exist."""
-        entity_id = f"input_boolean.{obj_id}"
-
-        # Check if it already exists
-        current = ha_api_get(f"/states/{entity_id}")
-        if current and current.get("state") not in (None,):
-            return  # Already exists
-
+    def _load(self):
+        """Load saved toggle states. Only overrides if file exists."""
         try:
-            # Use obj_id as name so HA generates the correct entity_id
-            payload = {"name": obj_id, "icon": icon}
-            data = json.dumps(payload).encode()
-            req = urllib.request.Request(
-                f"{HA_API}/config/input_boolean/config",
-                data=data,
-                headers={
-                    "Authorization": f"Bearer {SUPERVISOR_TOKEN}",
-                    "Content-Type": "application/json",
-                },
-                method="POST",
-            )
-            resp = urllib.request.urlopen(req, timeout=10)
-            log(f"Dashboard toggles: created {entity_id}")
-
-            # Update friendly name via state attributes
-            ha_api_post(f"/states/{entity_id}", {
-                "state": "off",
-                "attributes": {"friendly_name": name, "icon": icon},
-            })
-        except urllib.error.HTTPError as e:
-            if e.code == 409:
-                pass  # Already exists
-            else:
-                body = ""
-                try:
-                    body = e.read().decode()
-                except Exception:
-                    pass
-                log(f"Dashboard toggles: failed to create {obj_id}: HTTP {e.code} {body}")
+            with open(self.TOGGLES_FILE, "r") as f:
+                saved = json.load(f)
+                for key in self.state:
+                    if key in saved:
+                        self.state[key] = saved[key]
+        except FileNotFoundError:
+            pass
         except Exception as e:
-            log(f"Dashboard toggles: failed to create {obj_id}: {e}")
+            log(f"Toggles: failed to load {self.TOGGLES_FILE}: {e}")
 
-    def _poll_loop(self):
-        while True:
-            time.sleep(5)
-            try:
-                self._sync("input_boolean.plex_wol_enabled", "wol")
-                self._sync("input_boolean.plex_wol_geoip", "geoip")
-                self._sync("input_boolean.plex_wol_quiet_mode", "quiet")
-                self._sync("input_boolean.plex_wol_sleep_trigger", "sleep")
-            except Exception:
-                pass
+    def _save(self):
+        try:
+            with open(self.TOGGLES_FILE, "w") as f:
+                json.dump(self.state, f, indent=2)
+        except Exception as e:
+            log(f"Toggles: failed to save: {e}")
 
-    def _sync(self, entity_id, attr_name):
-        result = ha_api_get(f"/states/{entity_id}")
-        if result and "state" in result:
-            new_val = result["state"] == "on"
-            with self.lock:
-                old_val = getattr(self, attr_name)
-                if new_val != old_val:
-                    setattr(self, attr_name, new_val)
-                    log(f"Dashboard toggle: {entity_id} changed to {'ON' if new_val else 'OFF'}")
+    def toggle(self, name):
+        """Toggle a feature. Returns (success, new_value)."""
+        with self.lock:
+            if name not in self.state:
+                return False, None
+            self.state[name] = not self.state[name]
+            new_val = self.state[name]
+            self._save()
+        log(f"Toggle: {name} changed to {'ON' if new_val else 'OFF'}")
+        return True, new_val
+
+    def set(self, name, value):
+        """Set a toggle to a specific value. Returns (success, new_value)."""
+        with self.lock:
+            if name not in self.state:
+                return False, None
+            self.state[name] = bool(value)
+            new_val = self.state[name]
+            self._save()
+        log(f"Toggle: {name} set to {'ON' if new_val else 'OFF'}")
+        return True, new_val
+
+    def get_all(self):
+        with self.lock:
+            return dict(self.state)
 
     def get_wol(self):
         with self.lock:
-            return self.wol
+            return self.state["wol"]
 
     def get_geoip(self):
         with self.lock:
-            return self.geoip
+            return self.state["geoip"]
 
     def get_quiet(self):
         with self.lock:
-            return self.quiet
+            return self.state["quiet"]
 
     def get_sleep(self):
         with self.lock:
-            return self.sleep
+            return self.state["sleep"]
 
 
 # ---------------------------------------------------------------------------
@@ -466,10 +420,10 @@ class PlexSessionTracker:
 class GeoIPChecker:
     CACHE_TTL = 86400  # 24 hours
 
-    def __init__(self, enabled, allowed_countries_str, toggles=None):
+    def __init__(self, enabled, allowed_countries_str, toggle_manager=None):
         self.base_enabled = enabled
         self.allowed = set()
-        self.toggles = toggles
+        self.toggle_manager = toggle_manager
         if allowed_countries_str:
             self.allowed = {c.strip().upper() for c in allowed_countries_str.split(",")}
         self.cache = {}  # ip -> (allowed_bool, timestamp)
@@ -477,8 +431,8 @@ class GeoIPChecker:
 
     @property
     def enabled(self):
-        if self.toggles:
-            return self.toggles.get_geoip()
+        if self.toggle_manager:
+            return self.toggle_manager.get_geoip()
         return self.base_enabled
 
     def is_private(self, ip_str):
@@ -846,9 +800,9 @@ class BurstDetector:
 # Sleep trigger
 # ---------------------------------------------------------------------------
 class SleepTrigger:
-    def __init__(self, enabled, idle_minutes, max_awake_minutes, server_ip, ssh_user, ssh_port, toggles=None):
+    def __init__(self, enabled, idle_minutes, max_awake_minutes, server_ip, ssh_user, ssh_port, toggle_manager=None):
         self.base_enabled = enabled and (idle_minutes > 0 or max_awake_minutes > 0) and bool(ssh_user)
-        self.toggles = toggles
+        self.toggle_manager = toggle_manager
         self.idle_seconds = idle_minutes * 60 if idle_minutes > 0 else 0
         self.max_awake_seconds = max_awake_minutes * 60 if max_awake_minutes > 0 else 0
         self.server_ip = server_ip
@@ -879,8 +833,8 @@ class SleepTrigger:
 
     @property
     def enabled(self):
-        if self.toggles:
-            return self.base_enabled and self.toggles.get_sleep()
+        if self.toggle_manager:
+            return self.base_enabled and self.toggle_manager.get_sleep()
         return self.base_enabled
 
     def _ensure_ssh_key(self):
@@ -989,7 +943,7 @@ class SleepTrigger:
 # ---------------------------------------------------------------------------
 # Health check
 # ---------------------------------------------------------------------------
-def start_health_check(enabled, port, sensors, server_ip, server_port, conn_history):
+def start_health_check(enabled, port, sensors, server_ip, server_port, conn_history, toggle_manager):
     if not enabled:
         log("Health check: disabled")
         return
@@ -1002,23 +956,39 @@ def start_health_check(enabled, port, sensors, server_ip, server_port, conn_hist
         except Exception:
             return False
 
-    def serve():
-        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    def parse_request(data):
+        """Parse raw HTTP request bytes into method and path."""
         try:
-            srv.bind(("0.0.0.0", port))
-        except OSError as e:
-            log(f"Health check: failed to bind port {port}: {e}")
-            return
-        srv.listen(5)
-        log(f"Health check: listening on port {port}")
-        while True:
-            conn, _ = srv.accept()
-            try:
+            request_line = data.split(b"\r\n")[0].decode()
+            parts = request_line.split(" ")
+            if len(parts) >= 2:
+                return parts[0], parts[1]
+        except Exception:
+            pass
+        return "GET", "/"
+
+    def json_response(status_code, status_text, body_dict):
+        body = json.dumps(body_dict, indent=2)
+        return (
+            f"HTTP/1.1 {status_code} {status_text}\r\n"
+            f"Content-Type: application/json\r\n"
+            f"Access-Control-Allow-Origin: *\r\n"
+            f"Content-Length: {len(body)}\r\n"
+            f"\r\n{body}"
+        ).encode()
+
+    def handle_request(conn):
+        try:
+            raw = conn.recv(4096)
+            if not raw:
+                return
+            method, path = parse_request(raw)
+
+            # GET / — full status
+            if method == "GET" and path in ("/", "/status"):
                 uptime_str, uptime_secs = sensors.get_uptime()
                 plex_reachable = check_server()
                 history = conn_history.get_data()
-
                 status = {
                     "status": "ok",
                     "uptime": uptime_str,
@@ -1030,20 +1000,73 @@ def start_health_check(enabled, port, sensors, server_ip, server_port, conn_hist
                     "last_wake": sensors.last_wake_time or "never",
                     "last_wake_user": sensors.last_wake_user or "unknown",
                     "unique_ips_today": history,
+                    "toggles": toggle_manager.get_all(),
                     "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                 }
-                body = json.dumps(status, indent=2)
-                response = (
-                    f"HTTP/1.1 200 OK\r\n"
-                    f"Content-Type: application/json\r\n"
-                    f"Content-Length: {len(body)}\r\n"
-                    f"\r\n{body}"
-                )
-                conn.sendall(response.encode())
-            except Exception:
-                pass
-            finally:
-                conn.close()
+                conn.sendall(json_response(200, "OK", status))
+
+            # GET /toggles — toggle states only
+            elif method == "GET" and path == "/toggles":
+                conn.sendall(json_response(200, "OK", toggle_manager.get_all()))
+
+            # POST /toggle/<name> — flip a toggle
+            elif method == "POST" and path.startswith("/toggle/"):
+                name = path.split("/toggle/", 1)[1].strip("/")
+                ok, new_val = toggle_manager.toggle(name)
+                if ok:
+                    conn.sendall(json_response(200, "OK", {
+                        "toggled": name,
+                        "value": new_val,
+                        "all": toggle_manager.get_all(),
+                    }))
+                else:
+                    conn.sendall(json_response(400, "Bad Request", {
+                        "error": f"Unknown toggle: {name}",
+                        "valid": list(toggle_manager.get_all().keys()),
+                    }))
+
+            # POST /toggle/<name>/on or /toggle/<name>/off — set explicitly
+            elif method == "POST" and ("/on" in path or "/off" in path):
+                parts = path.strip("/").split("/")
+                if len(parts) == 3 and parts[0] == "toggle":
+                    name = parts[1]
+                    value = parts[2] == "on"
+                    ok, new_val = toggle_manager.set(name, value)
+                    if ok:
+                        conn.sendall(json_response(200, "OK", {
+                            "set": name,
+                            "value": new_val,
+                            "all": toggle_manager.get_all(),
+                        }))
+                    else:
+                        conn.sendall(json_response(400, "Bad Request", {
+                            "error": f"Unknown toggle: {name}",
+                        }))
+                else:
+                    conn.sendall(json_response(404, "Not Found", {"error": "Unknown endpoint"}))
+
+            else:
+                conn.sendall(json_response(404, "Not Found", {"error": "Unknown endpoint"}))
+
+        except Exception:
+            pass
+        finally:
+            conn.close()
+
+    def serve():
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            srv.bind(("0.0.0.0", port))
+        except OSError as e:
+            log(f"Health check: failed to bind port {port}: {e}")
+            return
+        srv.listen(10)
+        log(f"Health check: listening on port {port}")
+        log(f"  Endpoints: GET /status, GET /toggles, POST /toggle/<name>, POST /toggle/<name>/on|off")
+        while True:
+            conn, _ = srv.accept()
+            threading.Thread(target=handle_request, args=(conn,), daemon=True).start()
 
     t = threading.Thread(target=serve, daemon=True)
     t.start()
@@ -1106,7 +1129,6 @@ def load_options():
         "smart_wol_burst_window": 15,
         "enable_user_tracking": False,
         "plex_admin_token": "",
-        "enable_dashboard_toggles": True,
     }
     try:
         with open(OPTIONS_PATH, "r", encoding="utf-8") as f:
@@ -1229,21 +1251,21 @@ def shutdown_handler(signum, frame):
 # Client handler
 # ---------------------------------------------------------------------------
 def handle_client(client_sock, addr, opts, wol_state, flood, geoip, allowlist, blocklist,
-                  sensors, sleeper, toggles, session_tracker, conn_history, burst_detector,
+                  sensors, sleeper, toggle_manager, session_tracker, conn_history, burst_detector,
                   nowake_list, name_map):
     # Track connection
     connection_tracker.add(client_sock)
 
     try:
         _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
-                             allowlist, blocklist, sensors, sleeper, toggles, session_tracker,
+                             allowlist, blocklist, sensors, sleeper, toggle_manager, session_tracker,
                              conn_history, burst_detector, nowake_list, name_map)
     finally:
         connection_tracker.remove(client_sock)
 
 
 def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
-                         allowlist, blocklist, sensors, sleeper, toggles, session_tracker,
+                         allowlist, blocklist, sensors, sleeper, toggle_manager, session_tracker,
                          conn_history, burst_detector, nowake_list, name_map):
     # Flood detection
     flood.record(addr)
@@ -1257,7 +1279,7 @@ def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
     conn_history.record(client_ip)
 
     # Quiet mode — check toggle or config
-    quiet = toggles.get_quiet() if toggles.enabled else bool(opts.get("enable_quiet_mode", False))
+    quiet = toggle_manager.get_quiet() if toggle_manager.enabled else bool(opts.get("enable_quiet_mode", False))
 
     # IP blocklist check (before allowlist)
     if blocklist.is_blocked(client_ip):
@@ -1327,7 +1349,7 @@ def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
 
         # Check if WoL is enabled via config and dashboard toggle
         wol_config_enabled = bool(opts.get("enable_wol", True))
-        wol_dashboard_enabled = toggles.get_wol() if toggles.enabled else True
+        wol_dashboard_enabled = toggle_manager.get_wol() if toggle_manager.enabled else True
         wol_enabled = wol_config_enabled and wol_dashboard_enabled
 
         sensors.set_server_status("waking")
@@ -1497,7 +1519,7 @@ def main():
     log(f"  Sleep trigger:    {'ON — idle:' + str(opts.get('sleep_idle_minutes', 0)) + 'min, max awake:' + str(opts.get('max_awake_minutes', 0)) + 'min' if opts.get('enable_sleep_trigger') else 'OFF'}")
     log(f"  Health check:     {'ON — port ' + str(opts.get('health_check_port', 32401)) if opts.get('enable_health_check') else 'OFF'}")
     log(f"  HA sensors:       {'ON' if opts.get('enable_ha_sensors') else 'OFF'}")
-    log(f"  Dashboard toggles:{'ON' if opts.get('enable_dashboard_toggles') else 'OFF'}")
+    log(f"  Dashboard toggles:ON (via health check port {opts.get('health_check_port', 32401)})")
     log(f"  File logging:     {'ON — ' + str(opts.get('log_retention_days', 14)) + ' day retention' if opts.get('enable_file_logging') else 'OFF'}")
     log(f"  Quiet mode:       {'ON' if opts.get('enable_quiet_mode') else 'OFF'}")
     log(f"  Notify target:    {NOTIFY_TARGET or '(persistent only)'}")
@@ -1512,9 +1534,8 @@ def main():
     flood_excluded = {plex_server_ip} if plex_server_ip else set()
     flood = FloodDetector(flood_threshold, flood_window, excluded_ips=flood_excluded)
 
-    # Dashboard toggles (must init before geoip/sleeper so they can reference it)
-    toggles = DashboardToggles(
-        enabled=bool(opts.get("enable_dashboard_toggles", True)),
+    # Toggle manager (file-persisted, controlled via health check HTTP endpoint)
+    toggle_manager = ToggleManager(
         initial_wol=bool(opts.get("enable_wol", True)),
         initial_geoip=bool(opts.get("enable_geoip", True)),
         initial_quiet=bool(opts.get("enable_quiet_mode", False)),
@@ -1524,7 +1545,7 @@ def main():
     geoip = GeoIPChecker(
         bool(opts.get("enable_geoip", True)),
         str(opts.get("allowed_countries", "US")),
-        toggles=toggles,
+        toggle_manager=toggle_manager,
     )
 
     allowlist = IPAllowlist(
@@ -1579,7 +1600,7 @@ def main():
         server_ip=str(opts.get("plex_server_ip", "")),
         ssh_user=str(opts.get("server_ssh_user", "")),
         ssh_port=int(opts.get("server_ssh_port", 22)),
-        toggles=toggles,
+        toggle_manager=toggle_manager,
     )
 
     start_health_check(
@@ -1589,6 +1610,7 @@ def main():
         str(opts.get("plex_server_ip", "")),
         int(opts.get("plex_server_port", 32400)),
         conn_history,
+        toggle_manager,
     )
 
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -1606,7 +1628,7 @@ def main():
         t = threading.Thread(
             target=handle_client,
             args=(client_sock, addr, opts, wol_state, flood, geoip, allowlist, blocklist,
-                  sensors, sleeper, toggles, session_tracker, conn_history, burst_detector,
+                  sensors, sleeper, toggle_manager, session_tracker, conn_history, burst_detector,
                   nowake_list, name_map),
             daemon=True,
         )

@@ -402,8 +402,8 @@ def check_completed_items(config):
     if not tracker:
         return
 
-    # Get todo items via service call — returns completed and needs_action items
-    status, body = ha_api("POST", "services/todo/get_items", {
+    # Get todo items via service call — requires ?return_response for data back
+    status, body = ha_api("POST", "services/todo/get_items?return_response", {
         "entity_id": todo_entity,
     })
     if status != 200:

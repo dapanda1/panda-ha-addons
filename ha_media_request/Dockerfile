@@ -4,4 +4,5 @@ FROM ${BUILD_FROM}
 RUN apk add --no-cache python3
 
 COPY media_requests.py /app/media_requests.py
+COPY migrate.py /app/migrate.py
 COPY rootfs /
