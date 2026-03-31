@@ -32,7 +32,7 @@ import time
 import urllib.request
 
 OPTIONS_PATH = "/data/options.json"
-VERSION = "5.4.4"
+VERSION = "5.4.5"
 PROXY_BUF = 65536
 CONNECT_POLL_INTERVAL = 2
 SSH_KEY_PATH = "/data/plex_wol_key"
@@ -319,11 +319,19 @@ class DashboardToggles:
 
     def _ensure_helper(self, obj_id, name, icon):
         """Create input_boolean helper via HA config API if it doesn't exist."""
+        entity_id = f"input_boolean.{obj_id}"
+
+        # Check if it already exists
+        current = ha_api_get(f"/states/{entity_id}")
+        if current and current.get("state") not in (None,):
+            return  # Already exists
+
         try:
-            payload = {"name": name, "icon": icon}
+            # Use obj_id as name so HA generates the correct entity_id
+            payload = {"name": obj_id, "icon": icon}
             data = json.dumps(payload).encode()
             req = urllib.request.Request(
-                f"{HA_API}/config/input_boolean/config/{obj_id}",
+                f"{HA_API}/config/input_boolean/config",
                 data=data,
                 headers={
                     "Authorization": f"Bearer {SUPERVISOR_TOKEN}",
@@ -331,12 +339,24 @@ class DashboardToggles:
                 },
                 method="POST",
             )
-            urllib.request.urlopen(req, timeout=10)
+            resp = urllib.request.urlopen(req, timeout=10)
+            log(f"Dashboard toggles: created {entity_id}")
+
+            # Update friendly name via state attributes
+            ha_api_post(f"/states/{entity_id}", {
+                "state": "off",
+                "attributes": {"friendly_name": name, "icon": icon},
+            })
         except urllib.error.HTTPError as e:
             if e.code == 409:
-                pass  # Already exists, fine
+                pass  # Already exists
             else:
-                log(f"Dashboard toggles: failed to create {obj_id}: HTTP {e.code}")
+                body = ""
+                try:
+                    body = e.read().decode()
+                except Exception:
+                    pass
+                log(f"Dashboard toggles: failed to create {obj_id}: HTTP {e.code} {body}")
         except Exception as e:
             log(f"Dashboard toggles: failed to create {obj_id}: {e}")
 
