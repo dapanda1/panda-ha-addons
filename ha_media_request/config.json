@@ -1,6 +1,6 @@
 {
   "name": "HA Media Request",
-  "version": "2.0",
+  "version": "2.0.0",
   "slug": "ha_media_request",
   "url": "https://github.com/dapanda1/panda-ha-addons/tree/main/ha_media_request",
   "description": "Polls Gmail for media requests. Each email line becomes a checklist item in HA.",
