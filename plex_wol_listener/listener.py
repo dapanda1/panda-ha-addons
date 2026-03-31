@@ -32,7 +32,7 @@ import time
 import urllib.request
 
 OPTIONS_PATH = "/data/options.json"
-VERSION = "5.4.3"
+VERSION = "5.4.4"
 PROXY_BUF = 65536
 CONNECT_POLL_INTERVAL = 2
 SSH_KEY_PATH = "/data/plex_wol_key"
@@ -270,13 +270,13 @@ class ConnectionHistory:
 # HA Dashboard toggles
 # ---------------------------------------------------------------------------
 class DashboardToggles:
-    """Creates and polls input_boolean entities for live dashboard control."""
+    """Creates real input_boolean helpers for live dashboard control."""
 
     TOGGLES = {
-        "input_boolean.plex_wol_enabled": ("Plex WoL: WoL Enabled", "mdi:power"),
-        "input_boolean.plex_wol_geoip": ("Plex WoL: GeoIP Blocking", "mdi:earth"),
-        "input_boolean.plex_wol_quiet_mode": ("Plex WoL: Quiet Mode", "mdi:volume-off"),
-        "input_boolean.plex_wol_sleep_trigger": ("Plex WoL: Sleep Trigger", "mdi:sleep"),
+        "plex_wol_enabled": ("Plex WoL: WoL Enabled", "mdi:power"),
+        "plex_wol_geoip": ("Plex WoL: GeoIP Blocking", "mdi:earth"),
+        "plex_wol_quiet_mode": ("Plex WoL: Quiet Mode", "mdi:volume-off"),
+        "plex_wol_sleep_trigger": ("Plex WoL: Sleep Trigger", "mdi:sleep"),
     }
 
     def __init__(self, enabled, initial_wol, initial_geoip, initial_quiet, initial_sleep):
@@ -290,25 +290,55 @@ class DashboardToggles:
         if not enabled:
             return
 
-        # Create input_boolean entities via HA API
-        for entity_id, (name, icon) in self.TOGGLES.items():
-            initial = {
-                "input_boolean.plex_wol_enabled": initial_wol,
-                "input_boolean.plex_wol_geoip": initial_geoip,
-                "input_boolean.plex_wol_quiet_mode": initial_quiet,
-                "input_boolean.plex_wol_sleep_trigger": initial_sleep,
-            }.get(entity_id, False)
+        initials = {
+            "plex_wol_enabled": initial_wol,
+            "plex_wol_geoip": initial_geoip,
+            "plex_wol_quiet_mode": initial_quiet,
+            "plex_wol_sleep_trigger": initial_sleep,
+        }
 
-            state = "on" if initial else "off"
-            ha_api_post(f"/states/{entity_id}", {
-                "state": state,
-                "attributes": {"friendly_name": name, "icon": icon},
-            })
+        # Create real input_boolean helpers via config API
+        for obj_id, (name, icon) in self.TOGGLES.items():
+            self._ensure_helper(obj_id, name, icon)
+
+        # Set initial states
+        for obj_id, initial in initials.items():
+            entity_id = f"input_boolean.{obj_id}"
+            service = "turn_on" if initial else "turn_off"
+            # Only set initial state if the entity is currently unknown
+            current = ha_api_get(f"/states/{entity_id}")
+            if not current or current.get("state") in (None, "unknown", "unavailable"):
+                ha_api_post(f"/services/input_boolean/{service}", {
+                    "entity_id": entity_id,
+                })
 
         # Start polling thread
         t = threading.Thread(target=self._poll_loop, daemon=True)
         t.start()
-        log("Dashboard toggles: enabled")
+        log("Dashboard toggles: enabled (real input_boolean helpers)")
+
+    def _ensure_helper(self, obj_id, name, icon):
+        """Create input_boolean helper via HA config API if it doesn't exist."""
+        try:
+            payload = {"name": name, "icon": icon}
+            data = json.dumps(payload).encode()
+            req = urllib.request.Request(
+                f"{HA_API}/config/input_boolean/config/{obj_id}",
+                data=data,
+                headers={
+                    "Authorization": f"Bearer {SUPERVISOR_TOKEN}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            urllib.request.urlopen(req, timeout=10)
+        except urllib.error.HTTPError as e:
+            if e.code == 409:
+                pass  # Already exists, fine
+            else:
+                log(f"Dashboard toggles: failed to create {obj_id}: HTTP {e.code}")
+        except Exception as e:
+            log(f"Dashboard toggles: failed to create {obj_id}: {e}")
 
     def _poll_loop(self):
         while True:

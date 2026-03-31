@@ -1,5 +1,8 @@
 # Changelog
 
+## 5.4.4
+- Rewrote dashboard toggles to use real `input_boolean` helpers via HA's config API instead of fake state entities. Toggles now have unique IDs, persist across HA restarts, and respond properly to UI clicks. Delete any old "no unique ID" entities after upgrading.
+
 ## 5.4.3
 - Burst detection and auto-learning now run before the WoL enabled check. You can disable WoL, leave the server asleep, and the add-on will still learn infrastructure IPs from single probes. Turn WoL back on when ready — learned IPs are already on the no-wake list.
 
