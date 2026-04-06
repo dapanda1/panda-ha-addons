@@ -1,5 +1,8 @@
 # Changelog
 
+## 5.4.7
+- Fixed learned IPs failing to sync to config UI (HTTP 400) — corrected Supervisor API read endpoint and response parsing
+
 ## 5.4.6
 - Added `learned_nowake_ips` config field — auto-populated by the add-on, shows all IPs learned as infrastructure. Synced to the config UI on startup and after each new learn event.
 - Adding an IP to `allow_ip_plex_relay` now also removes it from the learned file permanently, preventing it from reappearing.

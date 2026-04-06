@@ -32,7 +32,7 @@ import time
 import urllib.request
 
 OPTIONS_PATH = "/data/options.json"
-VERSION = "5.4.6"
+VERSION = "5.4.7"
 PROXY_BUF = 65536
 CONNECT_POLL_INTERVAL = 2
 SSH_KEY_PATH = "/data/plex_wol_key"
@@ -645,11 +645,12 @@ class NoWakeList:
         try:
             # Read current config
             req = urllib.request.Request(
-                "http://supervisor/addons/self/options/config",
+                "http://supervisor/addons/self/options",
                 headers={"Authorization": f"Bearer {SUPERVISOR_TOKEN}"},
             )
             resp = urllib.request.urlopen(req, timeout=10)
-            opts = json.loads(resp.read().decode())
+            result = json.loads(resp.read().decode())
+            opts = result.get("data", {}).get("options", result.get("data", {}))
 
             # Update learned field
             opts["learned_nowake_ips"] = ",".join(sorted(learned_ips))
