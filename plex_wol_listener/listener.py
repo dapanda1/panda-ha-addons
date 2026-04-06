@@ -32,7 +32,7 @@ import time
 import urllib.request
 
 OPTIONS_PATH = "/data/options.json"
-VERSION = "5.4.7"
+VERSION = "5.4.8"
 PROXY_BUF = 65536
 CONNECT_POLL_INTERVAL = 2
 SSH_KEY_PATH = "/data/plex_wol_key"
@@ -643,19 +643,14 @@ class NoWakeList:
         if not SUPERVISOR_TOKEN:
             return
         try:
-            # Read current config
-            req = urllib.request.Request(
-                "http://supervisor/addons/self/options",
-                headers={"Authorization": f"Bearer {SUPERVISOR_TOKEN}"},
-            )
-            resp = urllib.request.urlopen(req, timeout=10)
-            result = json.loads(resp.read().decode())
-            opts = result.get("data", {}).get("options", result.get("data", {}))
+            # Read current config from local file
+            with open(OPTIONS_PATH, "r") as f:
+                opts = json.load(f)
 
             # Update learned field
             opts["learned_nowake_ips"] = ",".join(sorted(learned_ips))
 
-            # Write back
+            # Write back to Supervisor
             payload = json.dumps({"options": opts}).encode()
             req = urllib.request.Request(
                 "http://supervisor/addons/self/options",

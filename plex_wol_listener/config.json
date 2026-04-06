@@ -1,6 +1,6 @@
 {
   "name": "Plex WoL Listener",
-  "version": "5.4.7",
+  "version": "5.4.8",
   "slug": "plex_wol_listener",
   "description": "Proxies Plex traffic, wakes server via WoL, auto-sleeps on idle, Plex token validation, GeoIP blocking, flood detection, HA sensors, dashboard toggles, and notifications",
   "url": "https://github.com/dapanda1/panda-ha-addons/tree/main/plex_wol_listener",

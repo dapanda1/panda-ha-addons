@@ -1,5 +1,8 @@
 # Changelog
 
+## 5.4.8
+- Fixed learned IPs config sync (HTTP 405) — Supervisor API doesn't support GET on options endpoint. Now reads config from local `/data/options.json` file and POSTs update.
+
 ## 5.4.7
 - Fixed learned IPs failing to sync to config UI (HTTP 400) — corrected Supervisor API read endpoint and response parsing
 
