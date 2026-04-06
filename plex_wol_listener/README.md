@@ -74,10 +74,10 @@ IPs listed in `nowake_list` are proxied normally when the server is up, but if t
 Queries plex.tv for your server's relay server IPs and adds them to the no-wake list. Runs at startup and periodically based on `relay_rediscover_hours` (default 6). Requires `plex_admin_token` and `enable_nowake_list` to both be set. If an auto-discovered IP is incorrectly flagged, add it to `allow_ip_plex_relay` to override. Default: disabled.
 
 ### Infrastructure Auto-Learning
-When smart WoL is enabled and the server is down, IPs that send single probes (failing burst detection) are automatically learned as infrastructure and added to the no-wake list. Learned IPs persist across restarts in `/data/learned_nowake.json`.
+When smart WoL is enabled and the server is down, IPs that send single probes (failing burst detection) are automatically learned as infrastructure and added to the no-wake list. Learned IPs persist across restarts in `/data/learned_nowake.json` and are visible in the `learned_nowake_ips` config field (auto-managed, do not edit directly).
 
 ### Allow Wake Override (`allow_ip_plex_relay`)
-Comma-separated IPs or CIDR ranges (e.g. `34.0.0.0/8,198.27.160.147`) to exclude from the no-wake list. Overrides manual entries, auto-discovered relay IPs, and auto-learned IPs. Use to correct false positives.
+Comma-separated IPs or CIDR ranges (e.g. `34.0.0.0/8,198.27.160.147`) to exclude from the no-wake list. Overrides manual entries, auto-discovered relay IPs, and auto-learned IPs. Adding an IP here also permanently removes it from the learned file. Use to correct false positives.
 
 ### Log Dedup Cooldown (`log_dedup_cooldown_seconds`)
 Controls how long repeated "WoL disabled, dropping connection" messages are suppressed per IP. After logging once, the same IP's drops are silent for this many seconds. Default: 300 (5 minutes).

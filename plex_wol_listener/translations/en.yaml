@@ -76,7 +76,10 @@ configuration:
     description: How often to re-query plex.tv for updated relay IPs. Default 6 hours. Set to 0 to only discover at startup.
   allow_ip_plex_relay:
     name: Allow Wake from Plex Relay IPs
-    description: "Comma-separated IPs or CIDR ranges to exclude from the no-wake list (e.g. 34.0.0.0/8,198.27.160.147). Overrides auto-discovered, learned, and manual no-wake entries. Learned IPs are stored in /data/learned_nowake.json and persist across restarts. Check the add-on log at startup to see the full active no-wake list."
+    description: "Comma-separated IPs or CIDR ranges to exclude from the no-wake list (e.g. 34.0.0.0/8,198.27.160.147). Overrides auto-discovered, learned, and manual no-wake entries. Adding an IP here also removes it from the learned list permanently. Check the add-on log at startup to see the full active no-wake list."
+  learned_nowake_ips:
+    name: Learned No-Wake IPs (auto-managed)
+    description: "Auto-populated by the add-on. Shows IPs that were automatically learned as infrastructure (single probes while server was down). To remove an IP, add it to Allow Wake from Plex Relay IPs above — it will be removed from this list and excluded from the no-wake list. Do not edit this field directly — changes will be overwritten."
   enable_sleep_trigger:
     name: Sleep Trigger
     description: Puts the Plex server to sleep via SSH after the configured idle time or max awake time. Requires OpenSSH Server installed on the Plex server. Can be toggled live from the HA dashboard.

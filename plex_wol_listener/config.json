@@ -1,6 +1,6 @@
 {
   "name": "Plex WoL Listener",
-  "version": "5.4.5",
+  "version": "5.4.6",
   "slug": "plex_wol_listener",
   "description": "Proxies Plex traffic, wakes server via WoL, auto-sleeps on idle, Plex token validation, GeoIP blocking, flood detection, HA sensors, dashboard toggles, and notifications",
   "url": "https://github.com/dapanda1/panda-ha-addons/tree/main/plex_wol_listener",
@@ -34,6 +34,7 @@
     "auto_discover_plex_relays": false,
     "relay_rediscover_hours": 6,
     "allow_ip_plex_relay": "",
+    "learned_nowake_ips": "",
     "enable_sleep_trigger": false,
     "sleep_idle_minutes": 0,
     "max_awake_minutes": 0,
@@ -76,6 +77,7 @@
     "auto_discover_plex_relays": "bool",
     "relay_rediscover_hours": "int",
     "allow_ip_plex_relay": "str?",
+    "learned_nowake_ips": "str?",
     "enable_sleep_trigger": "bool",
     "sleep_idle_minutes": "int",
     "max_awake_minutes": "int",

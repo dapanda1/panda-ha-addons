@@ -1,5 +1,10 @@
 # Changelog
 
+## 5.4.6
+- Added `learned_nowake_ips` config field — auto-populated by the add-on, shows all IPs learned as infrastructure. Synced to the config UI on startup and after each new learn event.
+- Adding an IP to `allow_ip_plex_relay` now also removes it from the learned file permanently, preventing it from reappearing.
+- Learned IPs are backed up in both `/data/learned_nowake.json` (persistent file) and the `learned_nowake_ips` config field (visible in UI).
+
 ## 5.4.5
 - Replaced `DashboardToggles` (broken fake state entities) with `ToggleManager` — file-persisted toggles in `/data/toggles.json`, no HA helper entities needed
 - Rewrote health check HTTP server with full routing: `GET /status`, `GET /toggles`, `POST /toggle/<n>`, `POST /toggle/<n>/on|off`. CORS headers included.

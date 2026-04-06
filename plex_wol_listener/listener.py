@@ -32,7 +32,7 @@ import time
 import urllib.request
 
 OPTIONS_PATH = "/data/options.json"
-VERSION = "5.4.5"
+VERSION = "5.4.6"
 PROXY_BUF = 65536
 CONNECT_POLL_INTERVAL = 2
 SSH_KEY_PATH = "/data/plex_wol_key"
@@ -564,6 +564,9 @@ class NoWakeList:
         # Apply exclusions
         self._apply_exclusions()
 
+        # Sync learned IPs to config UI on startup
+        self._startup_sync()
+
         # Start periodic re-discovery
         if auto_discover and admin_token and rediscover_hours > 0:
             def _periodic():
@@ -590,12 +593,27 @@ class NoWakeList:
         return False
 
     def _apply_exclusions(self):
-        """Remove excluded IPs from the no-wake list."""
+        """Remove excluded IPs from the no-wake list and from the learned file."""
         with self.lock:
             removed = {ip for ip in self.ips if self._is_excluded(ip)}
             if removed:
                 self.ips -= removed
                 log(f"Allow wake override: removed {sorted(removed)} from no-wake list")
+
+        # Also clean excluded IPs from the learned file
+        if removed:
+            try:
+                with open(self.LEARNED_FILE, "r") as f:
+                    data = json.load(f)
+                    learned = set(data.get("ips", []))
+                cleaned = learned - removed
+                if cleaned != learned:
+                    self._save_learned(cleaned)
+                    log(f"Allow wake override: cleaned {len(learned - cleaned)} excluded IPs from learned file")
+            except FileNotFoundError:
+                pass
+            except Exception:
+                pass
 
     def _load_learned(self):
         """Load learned no-wake IPs from persistent file."""
@@ -612,12 +630,58 @@ class NoWakeList:
             log(f"No-wake learned: failed to load {self.LEARNED_FILE}: {e}")
 
     def _save_learned(self, learned_ips):
-        """Save learned no-wake IPs to persistent file."""
+        """Save learned no-wake IPs to persistent file and sync to config UI."""
         try:
             with open(self.LEARNED_FILE, "w") as f:
                 json.dump({"ips": sorted(learned_ips), "updated": time.strftime("%Y-%m-%d %H:%M:%S")}, f, indent=2)
         except Exception as e:
             log(f"No-wake learned: failed to save: {e}")
+        self._sync_to_config(learned_ips)
+
+    def _sync_to_config(self, learned_ips):
+        """Write learned IPs to the Supervisor config so they're visible in the UI."""
+        if not SUPERVISOR_TOKEN:
+            return
+        try:
+            # Read current config
+            req = urllib.request.Request(
+                "http://supervisor/addons/self/options/config",
+                headers={"Authorization": f"Bearer {SUPERVISOR_TOKEN}"},
+            )
+            resp = urllib.request.urlopen(req, timeout=10)
+            opts = json.loads(resp.read().decode())
+
+            # Update learned field
+            opts["learned_nowake_ips"] = ",".join(sorted(learned_ips))
+
+            # Write back
+            payload = json.dumps({"options": opts}).encode()
+            req = urllib.request.Request(
+                "http://supervisor/addons/self/options",
+                data=payload,
+                headers={
+                    "Authorization": f"Bearer {SUPERVISOR_TOKEN}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            urllib.request.urlopen(req, timeout=10)
+        except Exception as e:
+            log(f"No-wake learned: failed to sync to config: {e}")
+
+    def _startup_sync(self):
+        """On startup, sync learned IPs from file to the config UI."""
+        try:
+            with open(self.LEARNED_FILE, "r") as f:
+                data = json.load(f)
+                learned = set(data.get("ips", []))
+            if learned:
+                self._sync_to_config(learned)
+        except FileNotFoundError:
+            # No learned file yet — clear the config field
+            self._sync_to_config(set())
+        except Exception:
+            pass
 
     def learn(self, ip_str):
         """Learn a new no-wake IP. Returns True if newly added."""
