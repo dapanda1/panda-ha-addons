@@ -107,6 +107,21 @@ configuration:
   notify_target:
     name: Mobile Notification Target
     description: "The HA notify service for mobile push notifications (e.g. mobile_app_pixel_10_pro). Find yours in Developer Tools → Services → notify. Leave empty to only use persistent notifications (sidebar). Persistent notifications are always sent regardless."
+  notify_wake_timeout:
+    name: "Notify: Wake Timeout"
+    description: Send a notification when the Plex server fails to respond after WoL is sent. Default on.
+  notify_flood:
+    name: "Notify: Connection Flood"
+    description: Send a notification when the flood detection threshold is exceeded. Default on.
+  notify_server_slept:
+    name: "Notify: Server Slept"
+    description: Send a notification when the sleep trigger puts the Plex server to sleep. Default on.
+  notify_server_woken:
+    name: "Notify: Server Woken"
+    description: Send a notification identifying which user woke the server. Requires user tracking enabled. Default on.
+  notify_geoip_block:
+    name: "Notify: GeoIP Block"
+    description: Send a notification when a connection is blocked by GeoIP. Can be noisy if many foreign IPs probe your port. Default off.
   enable_file_logging:
     name: File Logging
     description: Writes logs to a file with daily rotation. Old log files are automatically deleted after the retention period.

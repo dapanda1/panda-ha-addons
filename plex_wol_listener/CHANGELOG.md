@@ -1,5 +1,9 @@
 # Changelog
 
+## 5.4.9
+- Added per-notification toggles: `notify_wake_timeout`, `notify_flood`, `notify_server_slept`, `notify_server_woken`, `notify_geoip_block`. Each can be independently enabled/disabled from the config page.
+- Added new GeoIP block notification — sends an alert when a connection is blocked by country. Default off to avoid noise from port scanners.
+
 ## 5.4.8
 - Fixed learned IPs config sync (HTTP 405) — Supervisor API doesn't support GET on options endpoint. Now reads config from local `/data/options.json` file and POSTs update.
 

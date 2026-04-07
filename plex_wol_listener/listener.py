@@ -32,7 +32,7 @@ import time
 import urllib.request
 
 OPTIONS_PATH = "/data/options.json"
-VERSION = "5.4.8"
+VERSION = "5.4.9"
 PROXY_BUF = 65536
 CONNECT_POLL_INTERVAL = 2
 SSH_KEY_PATH = "/data/plex_wol_key"
@@ -137,10 +137,14 @@ def ha_api_get(endpoint):
 
 
 NOTIFY_TARGET = ""  # set from config in main()
+NOTIFY_ENABLED = {}  # category -> bool, set from config in main()
 
 
-def ha_notify(title, message):
-    """Send notification via HA persistent notification + mobile app."""
+def ha_notify(title, message, category=None):
+    """Send notification via HA persistent notification + mobile app.
+    If category is set, checks NOTIFY_ENABLED before sending."""
+    if category and not NOTIFY_ENABLED.get(category, True):
+        return
     ha_api_post("/services/persistent_notification/create", {
         "title": title,
         "message": message,
@@ -470,6 +474,13 @@ class GeoIPChecker:
                 allowed = country in self.allowed
                 if not allowed:
                     log(f"GeoIP BLOCKED: {ip_str} is from {country} (allowed: {self.allowed})")
+                    threading.Thread(
+                        target=ha_notify,
+                        args=("Plex WoL: GeoIP blocked",
+                              f"Connection from {ip_str} blocked — country {country} not in allowed list.",
+                              "geoip_block"),
+                        daemon=True,
+                    ).start()
         except Exception as e:
             log(f"WARNING: GeoIP lookup failed for {ip_str}: {e} — allowing by default")
             allowed = True
@@ -789,7 +800,7 @@ class FloodDetector:
                 log(f"ALERT: {msg}")
                 threading.Thread(
                     target=ha_notify,
-                    args=("Plex WoL: Connection flood", msg),
+                    args=("Plex WoL: Connection flood", msg, "flood"),
                     daemon=True,
                 ).start()
 
@@ -958,7 +969,8 @@ class SleepTrigger:
                 threading.Thread(
                     target=ha_notify,
                     args=("Plex WoL: Server sleeping",
-                          f"Plex server {self.server_ip} put to sleep after idle timeout."),
+                          f"Plex server {self.server_ip} put to sleep after idle timeout.",
+                          "server_slept"),
                     daemon=True,
                 ).start()
             else:
@@ -1179,6 +1191,11 @@ def load_options():
         "health_check_port": 32401,
         "enable_ha_sensors": True,
         "notify_target": "",
+        "notify_wake_timeout": True,
+        "notify_flood": True,
+        "notify_server_slept": True,
+        "notify_server_woken": True,
+        "notify_geoip_block": False,
         "enable_file_logging": True,
         "log_retention_days": 14,
         "log_dedup_cooldown_seconds": 300,
@@ -1443,7 +1460,7 @@ def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
             sensors.set_server_status("timeout")
             threading.Thread(
                 target=ha_notify,
-                args=("Plex WoL: Wake failed", msg),
+                args=("Plex WoL: Wake failed", msg, "wake_timeout"),
                 daemon=True,
             ).start()
             client_sock.close()
@@ -1462,7 +1479,7 @@ def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
                     sensors.set_last_wake(display)
                     threading.Thread(
                         target=ha_notify,
-                        args=("Plex WoL: Server woken", f"Server woken by {display} from {client_ip}"),
+                        args=("Plex WoL: Server woken", f"Server woken by {display} from {client_ip}", "server_woken"),
                         daemon=True,
                     ).start()
             threading.Thread(target=_track_wake_user, daemon=True).start()
@@ -1513,6 +1530,15 @@ def main():
 
     global NOTIFY_TARGET
     NOTIFY_TARGET = str(opts.get("notify_target", "")).strip()
+
+    global NOTIFY_ENABLED
+    NOTIFY_ENABLED = {
+        "wake_timeout": bool(opts.get("notify_wake_timeout", True)),
+        "flood": bool(opts.get("notify_flood", True)),
+        "server_slept": bool(opts.get("notify_server_slept", True)),
+        "server_woken": bool(opts.get("notify_server_woken", True)),
+        "geoip_block": bool(opts.get("notify_geoip_block", False)),
+    }
 
     # --- Config dependency enforcement ---
     config_changed = False

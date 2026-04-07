@@ -122,11 +122,12 @@ Writes logs to `/data/plex_wol.log` with daily rotation. Old logs are deleted af
 Suppresses routine "Server already up — proxying" and "Connection closed" log lines. WoL events, errors, timeouts, and alerts are always logged regardless. Controllable from the dashboard toggle. Default: disabled.
 
 ### Notifications
-Sends persistent HA notifications (sidebar) on all alert events. If `notify_target` is set (e.g. `mobile_app_pixel_10_pro`), also sends mobile push notifications. Find your notify service in **Developer Tools → Services → notify**. Notification events include:
-- Wake timeout (server failed to come up)
-- Flood detection threshold exceeded
-- Server put to sleep by idle trigger
-- Server woken by user (if user tracking enabled)
+Sends persistent HA notifications (sidebar) and optional mobile push (via `notify_target`). Each notification type can be individually toggled from the config page:
+- `notify_wake_timeout` — server failed to respond after WoL (default: on)
+- `notify_flood` — connection flood threshold exceeded (default: on)
+- `notify_server_slept` — idle/max awake timer triggered sleep (default: on)
+- `notify_server_woken` — user identified after wake (default: on)
+- `notify_geoip_block` — connection blocked by country (default: off, can be noisy)
 
 ### Auto-restart
 If the proxy process crashes, the s6 finish script waits 5 seconds and restarts it automatically. No manual intervention needed.
