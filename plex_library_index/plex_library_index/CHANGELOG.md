@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.2.7 — 2026-05-26
+
+### Critical fix
+- **Forced cache invalidation on version bumps.** The Supervisor passes `BUILD_VERSION` as a build-arg, but the previous Dockerfile didn't reference it, so Docker reused cached layers from prior versions. This meant version bumps would *appear* to install but the actual image used pre-update file content. The Dockerfile now references `${BUILD_VERSION}` in a RUN echo before the COPY layers, forcing every layer downstream to rebuild on each version change.
+
+### Diagnostic
+- Build output now prints `[build] verified <file> is CR-free` and `[build] shebang: <line>` for each s6 service script during build. This makes it possible to verify from the *build log* exactly what shebang the running container will see.
+- Build also prints the version it's building, e.g. `Building Plex Library Index version 1.2.7`.
+
+### Note for the previous failures
+v1.2.4 and v1.2.5 were almost certainly running stale cached content rather than the newly committed code. The build appeared to succeed in 5 seconds because Docker reused every layer — including the layer with the (broken) s6 scripts. This release breaks that cache.
+
+## 1.2.6 — 2026-05-26
+
+### Added
+- **Timestamps on all log lines.** `migrate.py` now uses Python's logging module with ISO-8601 timestamp prefixes, matching `server.py`'s format. The s6 service scripts wrap each bashio log line with an explicit `[YYYY-MM-DDTHH:MM:SS]` prefix so every entry has a date/time stamp regardless of source.
+- Note: s6-overlay's own startup messages (`s6-rc: info: service ...`) are produced by s6 itself and remain untimestamped. Those are upstream and cannot be changed without rebuilding the base image.
+
 ## 1.2.5 — 2026-05-26
 
 ### Diagnostic / cleanup

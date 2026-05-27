@@ -1,9 +1,10 @@
 #!/usr/bin/with-contenv bashio
-bashio::log.info "init-migrate: starting"
+TS=$(date -Iseconds)
+bashio::log.info "[$TS] init-migrate: starting"
 if python3 /usr/src/migrate.py; then
-    bashio::log.info "init-migrate: done"
+    bashio::log.info "[$(date -Iseconds)] init-migrate: done"
 else
     rc=$?
-    bashio::log.error "init-migrate: FAILED with exit code $rc"
+    bashio::log.error "[$(date -Iseconds)] init-migrate: FAILED with exit code $rc"
     exit $rc
 fi

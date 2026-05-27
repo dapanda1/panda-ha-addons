@@ -7,6 +7,7 @@ in-memory options dict forward, then pushes the result back to the
 Supervisor API so the cleaned config is persisted.
 """
 import json
+import logging
 import os
 import sys
 import urllib.error
@@ -18,9 +19,18 @@ OPTIONS_FILE = "/data/options.json"
 SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN", "")
 SUPERVISOR_URL = "http://supervisor/addons/self/options"
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] [migrate:%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",
+    stream=sys.stdout,
+)
+log = logging.getLogger("migrate")
+
 
 def log(msg):
-    print(f"[migrate] {msg}", flush=True)
+    log_info = logging.getLogger("migrate").info
+    log_info(msg)
 
 
 def read_schema_version() -> int:
