@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+env/
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*~
+
+# Editors
+.idea/
+.vscode/
+*.sublime-*
+
+# Build artifacts
+*.tar.gz
+*.tar
+build/
+dist/
+
+# Runtime data (should never be in the image)
+data/
+options.json
+.schema_version
+library.json
+library.json.gz
+state.json
+
+# Local secrets — never commit a real token
+.env
+secrets.yaml
+**/plex_token*
+
+# Ruff
+.ruff_cache/

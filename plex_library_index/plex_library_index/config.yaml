@@ -1,0 +1,61 @@
+name: "Plex Library Index"
+version: "1.2.1"
+slug: "plex_library_index"
+description: "Scans Plex library and serves a searchable index inside Home Assistant. Sidebar-only, no external port."
+arch:
+  - aarch64
+url: "https://github.com/noah/plex-library-index"
+init: false
+startup: services
+boot: auto
+host_network: false
+homeassistant_api: true
+
+# Ingress = sidebar entry, authenticated via HA, works in HA mobile app.
+# No `ports:` block on purpose — there is no host port exposed.
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:filmstrip
+panel_title: "Plex Index"
+
+# Mounts
+map:
+  - "config:rw"
+  - "share:rw"
+
+options:
+  plex_url: "http://homeassistant.local:32400"
+  plex_token: ""
+  interval_hours: 24
+  parallel_jobs: 4
+  gzip_output: true
+  log_level: "info"
+  notify_on_success: false
+  notify_on_error: true
+  notify_service: ""
+  notify_only_on_changes: false
+  telegram_enabled: false
+  telegram_bot_token: ""
+  telegram_allowed_chat_ids: []
+  telegram_notify_on_success: false
+  telegram_notify_on_error: true
+  telegram_answer_commands: true
+
+schema:
+  plex_url: "url"
+  plex_token: "password"
+  interval_hours: "int(1,168)"
+  parallel_jobs: "int(1,16)"
+  gzip_output: "bool"
+  log_level: "list(debug|info|warning|error)"
+  notify_on_success: "bool"
+  notify_on_error: "bool"
+  notify_service: "str?"
+  notify_only_on_changes: "bool"
+  telegram_enabled: "bool"
+  telegram_bot_token: "password?"
+  telegram_allowed_chat_ids:
+    - "int"
+  telegram_notify_on_success: "bool"
+  telegram_notify_on_error: "bool"
+  telegram_answer_commands: "bool"

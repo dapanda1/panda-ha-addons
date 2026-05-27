@@ -1,0 +1,38 @@
+name: Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install tooling
+        run: pip install ruff pyyaml
+
+      - name: Validate YAML files
+        run: |
+          python -c "import yaml; yaml.safe_load(open('repository.yaml'))"
+          python -c "import yaml; yaml.safe_load(open('plex_library_index/config.yaml'))"
+          python -c "import yaml; yaml.safe_load(open('plex_library_index/build.yaml'))"
+
+      - name: Validate Python syntax
+        run: |
+          python -m py_compile plex_library_index/exporter.py
+          python -m py_compile plex_library_index/server.py
+          python -m py_compile plex_library_index/migrate.py
+          python -m py_compile plex_library_index/telegram_bot.py
+
+      - name: Ruff (lint only — non-blocking style warnings)
+        run: ruff check plex_library_index/ --select E9,F63,F7,F82 --output-format=github
+        # E9: syntax errors, F63: invalid type, F7: syntax, F82: undefined name
+        # These are real errors; style nitpicks (line length etc.) are skipped.

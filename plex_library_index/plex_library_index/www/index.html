@@ -1,0 +1,1036 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Plex Library Index</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0e0d0b;
+    --panel: #16140f;
+    --panel-2: #1d1a14;
+    --ink: #e8e2d2;
+    --ink-dim: #948a73;
+    --rule: #2a2620;
+    --accent: #d8a657;
+    --accent-dim: #6a5430;
+    --movie: #7daea3;
+    --show: #d3869b;
+    --uhd: #ea6962;
+    --hd: #a9b665;
+    --sd: #7c6f64;
+    --error: #ea6962;
+    --success: #a9b665;
+    --mono: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+    --serif: 'Fraunces', Georgia, serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink); font-family: var(--mono); font-size: 14px; }
+  body {
+    background-image:
+      radial-gradient(ellipse 80% 50% at 50% -10%, rgba(216,166,87,0.08), transparent 60%),
+      repeating-linear-gradient(0deg, transparent 0 2px, rgba(255,255,255,0.012) 2px 3px);
+    min-height: 100vh;
+  }
+  header {
+    border-bottom: 1px solid var(--rule);
+    padding: 24px 32px 18px;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 24px;
+    flex-wrap: wrap;
+  }
+  h1 {
+    font-family: var(--serif);
+    font-weight: 800;
+    font-size: 36px;
+    letter-spacing: -0.02em;
+    margin: 0;
+    line-height: 1;
+  }
+  h1 .acc { color: var(--accent); font-style: italic; }
+  .nav { display: flex; gap: 8px; }
+  .nav-btn {
+    background: transparent; border: 1px solid var(--rule); color: var(--ink-dim);
+    font-family: var(--mono); font-size: 12px; padding: 6px 14px; cursor: pointer;
+    letter-spacing: 0.05em; text-transform: uppercase; transition: all 0.15s;
+  }
+  .nav-btn:hover { border-color: var(--accent-dim); color: var(--ink); }
+  .nav-btn.active { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+  .meta { font-size: 11px; color: var(--ink-dim); text-align: right; }
+  .meta strong { color: var(--ink); font-weight: 500; }
+  .meta .pulse { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); margin-right: 6px; animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+  main { padding: 18px 32px 80px; max-width: 1400px; margin: 0 auto; }
+  .view { display: none; }
+  .view.active { display: block; }
+  .controls {
+    display: grid;
+    grid-template-columns: 1fr auto auto auto;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  input[type="text"], input[type="number"], select, button, textarea {
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 14px;
+    padding: 9px 13px;
+    outline: none;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  input[type="text"]:focus, input[type="number"]:focus, select:focus, textarea:focus { border-color: var(--accent); }
+  input[type="text"], input[type="number"] { width: 100%; }
+  input[type="text"]::placeholder, input[type="number"]::placeholder { color: var(--ink-dim); }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button:disabled { cursor: not-allowed; opacity: 0.5; }
+  .quick { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+  .chip {
+    background: transparent; border: 1px solid var(--rule); color: var(--ink-dim);
+    padding: 5px 10px; font-size: 11px; cursor: pointer;
+    letter-spacing: 0.05em; text-transform: uppercase;
+  }
+  .chip:hover { border-color: var(--accent-dim); color: var(--ink); }
+  .chip.on { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+  .chip.on:hover { color: var(--bg); }
+  .chip.action { color: var(--accent); border-color: var(--accent-dim); }
+  .chip.action:hover { background: var(--accent); color: var(--bg); }
+  .stats {
+    display: flex; gap: 24px; padding: 12px 0 14px;
+    border-bottom: 1px solid var(--rule); margin-bottom: 14px;
+    font-size: 11px; color: var(--ink-dim); flex-wrap: wrap;
+  }
+  .stats span strong { color: var(--ink); font-family: var(--serif); font-size: 17px; font-weight: 600; margin-right: 4px; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--rule); padding: 14px 16px;
+    margin-bottom: 14px; display: none;
+  }
+  .panel.open { display: block; }
+  .panel h3 { margin: 0 0 8px; font-family: var(--serif); font-size: 15px; font-weight: 600; color: var(--accent); }
+  .panel-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .panel-grid > div h4 { margin: 0 0 6px; font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-dim); font-weight: 500; }
+  .bar { display: flex; justify-content: space-between; padding: 3px 0; font-size: 12px; }
+  .bar .lbl { color: var(--ink); }
+  .bar .v { color: var(--ink-dim); font-variant-numeric: tabular-nums; }
+  .toast {
+    position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+    background: var(--panel-2); border: 1px solid var(--accent-dim); color: var(--ink);
+    padding: 10px 18px; font-size: 12px; z-index: 100;
+    opacity: 0; transition: opacity 0.25s; pointer-events: none;
+    max-width: 90vw;
+  }
+  .toast.show { opacity: 1; }
+  .toast.error { border-color: var(--error); color: var(--error); }
+  .toast.success { border-color: var(--success); color: var(--success); }
+  .banner-error {
+    background: rgba(234,105,98,0.08); border: 1px solid var(--error); color: var(--error);
+    padding: 10px 14px; margin-bottom: 14px; font-size: 12px;
+  }
+  .results { display: flex; flex-direction: column; }
+  .row {
+    display: grid;
+    grid-template-columns: 60px 1fr 100px 1.1fr 80px;
+    gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--rule);
+    align-items: baseline; transition: background 0.2s;
+  }
+  .row:hover { background: rgba(216,166,87,0.03); }
+  .row.flash { background: rgba(216,166,87,0.18); }
+  .tag { font-size: 10px; letter-spacing: 0.15em; text-transform: uppercase; font-weight: 700; }
+  .tag.movie { color: var(--movie); }
+  .tag.show { color: var(--show); }
+  .title-cell { font-family: var(--serif); font-size: 17px; font-weight: 600; line-height: 1.2; color: var(--ink); }
+  .title-cell .yr { color: var(--ink-dim); font-weight: 400; margin-left: 6px; font-size: 13px; }
+  .badges { display: inline-flex; gap: 4px; margin-left: 6px; vertical-align: middle; }
+  .badge { font-size: 9px; letter-spacing: 0.06em; padding: 1px 5px; border: 1px solid currentColor; font-family: var(--mono); font-weight: 700; }
+  .badge.uhd { color: var(--uhd); }
+  .badge.hd { color: var(--hd); }
+  .badge.sd { color: var(--sd); }
+  .badge.watched { color: var(--accent-dim); }
+  .num { font-variant-numeric: tabular-nums; color: var(--ink-dim); text-align: right; font-size: 11px; line-height: 1.4; }
+  .num strong { color: var(--ink); font-weight: 500; }
+  .detail { color: var(--ink-dim); font-size: 11px; line-height: 1.5; }
+  .detail .lib { color: var(--accent-dim); }
+  .links { margin-top: 4px; display: flex; gap: 10px; flex-wrap: wrap; }
+  .links a { color: var(--ink-dim); text-decoration: none; font-size: 10px; border-bottom: 1px solid var(--rule); padding-bottom: 1px; }
+  .links a:hover { color: var(--accent); border-color: var(--accent); }
+  .seasons { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
+  .season-chip { font-size: 9px; padding: 2px 6px; border: 1px solid var(--rule); color: var(--ink-dim); font-variant-numeric: tabular-nums; }
+  .season-chip.unwatched { border-color: var(--accent-dim); color: var(--ink); }
+  .empty { padding: 60px 20px; text-align: center; color: var(--ink-dim); font-family: var(--serif); font-size: 18px; font-style: italic; }
+  mark { background: var(--accent); color: var(--bg); padding: 0 2px; }
+  footer { border-top: 1px solid var(--rule); padding: 14px 32px; color: var(--ink-dim); font-size: 11px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+  kbd { background: var(--panel-2); border: 1px solid var(--rule); color: var(--ink); padding: 1px 5px; font-size: 10px; border-radius: 2px; font-family: var(--mono); }
+  #sentinel { padding: 24px; text-align: center; color: var(--ink-dim); font-size: 11px; }
+
+  /* preferences view */
+  .prefs-section { margin-bottom: 28px; }
+  .prefs-section h2 { font-family: var(--serif); font-size: 22px; font-weight: 600; color: var(--accent); margin: 0 0 4px; }
+  .prefs-section .sub { font-size: 12px; color: var(--ink-dim); margin-bottom: 14px; }
+  .prefs-section .source { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent-dim); padding: 2px 6px; border: 1px solid var(--accent-dim); display: inline-block; margin-left: 8px; vertical-align: middle; }
+  .prefs-grid { display: grid; grid-template-columns: 220px 1fr; gap: 10px 18px; align-items: center; }
+  .prefs-grid label { color: var(--ink); font-size: 13px; }
+  .prefs-grid .hint { color: var(--ink-dim); font-size: 11px; grid-column: 2; margin-top: -4px; margin-bottom: 6px; }
+  .prefs-grid input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); }
+  .prefs-grid .ro { color: var(--ink-dim); padding: 9px 0; font-size: 13px; }
+  .prefs-grid .ro code { background: var(--panel); padding: 2px 6px; border: 1px solid var(--rule); font-size: 12px; }
+  .prefs-actions { margin-top: 18px; display: flex; gap: 10px; flex-wrap: wrap; }
+  .prefs-actions button { font-size: 12px; padding: 9px 18px; }
+  .prefs-warning { background: rgba(216,166,87,0.06); border: 1px solid var(--accent-dim); padding: 10px 14px; font-size: 12px; color: var(--ink-dim); margin-bottom: 18px; }
+  .prefs-warning strong { color: var(--ink); }
+  .ok-check { color: var(--success); }
+  .bad-check { color: var(--error); }
+
+  @media (max-width: 800px) {
+    header, main, footer { padding-left: 16px; padding-right: 16px; }
+    h1 { font-size: 28px; }
+    .controls { grid-template-columns: 1fr; }
+    .row { grid-template-columns: 50px 1fr 60px; gap: 10px; }
+    .row .detail-hide, .row .num-hide { display: none; }
+    .panel-grid { grid-template-columns: 1fr; }
+    .prefs-grid { grid-template-columns: 1fr; gap: 6px 0; }
+    .prefs-grid .hint { grid-column: 1; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>plex <span class="acc">/</span> index</h1>
+  <div class="nav">
+    <button class="nav-btn active" data-view="browse">Browse</button>
+    <button class="nav-btn" data-view="prefs">Preferences</button>
+  </div>
+  <div class="meta" id="meta">loading…</div>
+</header>
+
+<div id="toast" class="toast"></div>
+
+<main>
+  <!-- BROWSE VIEW -->
+  <div class="view active" id="view-browse">
+    <div id="error-banner" class="banner-error" style="display:none;"></div>
+
+    <div class="controls">
+      <input type="text" id="q" placeholder="search title, genre, director, studio, library…  (/ to focus)" autocomplete="off" />
+      <select id="type">
+        <option value="all">all types</option>
+        <option value="movie">movies only</option>
+        <option value="show">shows only</option>
+      </select>
+      <select id="sort">
+        <option value="title">sort: title</option>
+        <option value="year-desc">sort: year ↓</option>
+        <option value="year-asc">sort: year ↑</option>
+        <option value="added-desc">sort: added ↓</option>
+        <option value="rating-desc">sort: rating ↓</option>
+        <option value="duration-desc">sort: duration ↓</option>
+      </select>
+      <select id="library"><option value="">all libraries</option></select>
+    </div>
+
+    <div class="quick">
+      <button class="chip" data-quick="recent">recently added (30d)</button>
+      <button class="chip" data-quick="unwatched">unwatched only</button>
+      <button class="chip" data-quick="uhd">4K only</button>
+      <button class="chip" id="random-btn">🎲 random pick</button>
+      <button class="chip" id="stats-btn">📊 stats</button>
+      <button class="chip" id="dupes-btn">duplicates</button>
+      <button class="chip" id="csv-btn">⇣ csv (filtered)</button>
+      <button class="chip" id="clear-btn">clear filters</button>
+      <button class="chip action" id="refresh-btn">↻ refresh now</button>
+    </div>
+
+    <div class="panel" id="stats-panel">
+      <h3>library breakdown</h3>
+      <div class="panel-grid">
+        <div><h4>top genres</h4><div id="stat-genres"></div></div>
+        <div><h4>by decade</h4><div id="stat-decades"></div></div>
+        <div><h4>by library</h4><div id="stat-libs"></div></div>
+      </div>
+    </div>
+
+    <div class="panel" id="dupes-panel">
+      <h3>potential duplicates</h3>
+      <div id="dupes-list" style="font-size: 12px; color: var(--ink-dim);"></div>
+    </div>
+
+    <div class="stats" id="stats" hidden>
+      <span><strong id="s-shown">0</strong>shown</span>
+      <span><strong id="s-movies">0</strong>movies</span>
+      <span><strong id="s-shows">0</strong>shows</span>
+      <span><strong id="s-seasons">0</strong>seasons</span>
+      <span><strong id="s-episodes">0</strong>episodes</span>
+      <span><strong id="s-size">0</strong>GB total</span>
+    </div>
+
+    <div class="results" id="results"><div class="empty">loading…</div></div>
+    <div id="sentinel" hidden></div>
+  </div>
+
+  <!-- PREFERENCES VIEW -->
+  <div class="view" id="view-prefs">
+
+    <div class="prefs-warning">
+      This page has two kinds of settings.
+      <strong>Display preferences</strong> are saved on the add-on and apply to anyone visiting the index.
+      <strong>Server settings</strong> (Plex token, schedule, notifications) live in the add-on's Configuration tab in Home Assistant — those are shown here read-only for reference. Edit them from <strong>Settings → Add-ons → Plex Library Index → Configuration</strong>.
+    </div>
+
+    <div class="prefs-section">
+      <h2>Display preferences <span class="source">stored in add-on</span></h2>
+      <div class="sub">How the Browse view behaves by default. Applies to all users of this add-on.</div>
+      <div class="prefs-grid">
+        <label for="pref-sort">Default sort</label>
+        <select id="pref-sort">
+          <option value="title">title</option>
+          <option value="year-desc">year ↓</option>
+          <option value="year-asc">year ↑</option>
+          <option value="added-desc">date added ↓</option>
+          <option value="rating-desc">rating ↓</option>
+          <option value="duration-desc">duration ↓</option>
+        </select>
+
+        <label for="pref-type">Default media type</label>
+        <select id="pref-type">
+          <option value="all">all types</option>
+          <option value="movie">movies only</option>
+          <option value="show">shows only</option>
+        </select>
+
+        <label for="pref-library">Default library</label>
+        <select id="pref-library"><option value="">(all libraries)</option></select>
+
+        <label for="pref-batch">Items per scroll batch</label>
+        <input type="number" id="pref-batch" min="10" max="500" step="10" />
+        <div class="hint">Lower for slower devices. Default: 50.</div>
+
+        <label for="pref-hide-watched">Hide watched by default</label>
+        <input type="checkbox" id="pref-hide-watched" />
+
+        <label for="pref-uhd-default">4K only by default</label>
+        <input type="checkbox" id="pref-uhd-default" />
+
+        <label for="pref-recent-default">Recently added (30d) by default</label>
+        <input type="checkbox" id="pref-recent-default" />
+
+        <label for="pref-auto-refresh">Trigger a scan when the page opens</label>
+        <input type="checkbox" id="pref-auto-refresh" />
+        <div class="hint">Off by default. Useful if you mostly visit the page after adding content.</div>
+      </div>
+      <div class="prefs-actions">
+        <button id="prefs-save">save preferences</button>
+        <button id="prefs-reset">reset to defaults</button>
+      </div>
+    </div>
+
+    <div class="prefs-section">
+      <h2>Server settings <span class="source">in HA add-on config</span></h2>
+      <div class="sub">Read-only summary of the add-on's current configuration. Change these in HA's add-on Configuration tab.</div>
+      <div class="prefs-grid" id="server-summary">
+        <div class="ro">loading…</div>
+      </div>
+    </div>
+
+    <div class="prefs-section">
+      <h2>Notifications</h2>
+      <div class="sub">Routed through Home Assistant's notify services. Configure target in the add-on's Configuration tab.</div>
+      <div class="prefs-grid" id="notify-summary">
+        <div class="ro">loading…</div>
+      </div>
+      <div class="prefs-actions">
+        <button id="test-notify-btn">send test notification</button>
+      </div>
+    </div>
+
+    <div class="prefs-section">
+      <h2>Telegram bot</h2>
+      <div class="sub">Self-contained Telegram integration. Sends notifications and answers library queries from allowed chats. Configure in the add-on's Configuration tab.</div>
+      <div class="prefs-grid" id="telegram-summary">
+        <div class="ro">loading…</div>
+      </div>
+      <div class="prefs-actions">
+        <button id="test-telegram-btn">send test telegram message</button>
+      </div>
+    </div>
+
+    <div class="prefs-section">
+      <h2>About</h2>
+      <div class="prefs-grid">
+        <label>Add-on version</label><div class="ro" id="about-version">—</div>
+        <label>Last scan</label><div class="ro" id="about-last-scan">—</div>
+        <label>Last scan duration</label><div class="ro" id="about-duration">—</div>
+        <label>Last error</label><div class="ro" id="about-error">—</div>
+        <label>Plex server</label><div class="ro" id="about-server">—</div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<footer>
+  <span><kbd>/</kbd> search · <kbd>esc</kbd> clear · <kbd>r</kbd> random</span>
+  <span id="gen-at"></span>
+</footer>
+
+<script>
+const BATCH_DEFAULT = 50;
+let BATCH = BATCH_DEFAULT;
+let DATA = null, ITEMS = [], FILTERED = [], RENDERED = 0;
+let QUICK = { recent: false, unwatched: false, uhd: false };
+let OBSERVER = null, DEBOUNCE = null, STATUS_TIMER = null;
+let PREFS = null;
+
+const $ = (id) => document.getElementById(id);
+
+function fmtDate(iso) {
+  if (!iso) return "";
+  try { return new Date(iso).toISOString().slice(0,10); } catch(e) { return ""; }
+}
+function fmtRelative(iso) {
+  if (!iso) return "never";
+  const diff = Date.now() - new Date(iso).getTime();
+  if (diff < 60000) return "just now";
+  if (diff < 3600000) return Math.floor(diff/60000) + "m ago";
+  if (diff < 86400000) return Math.floor(diff/3600000) + "h ago";
+  return Math.floor(diff/86400000) + "d ago";
+}
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+function highlight(text, q) {
+  text = esc(text);
+  if (!q) return text;
+  const re = new RegExp("(" + q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ")", "ig");
+  return text.replace(re, "<mark>$1</mark>");
+}
+function fmtBytes(n) {
+  if (!n) return "—";
+  if (n > 1e9) return (n/1e9).toFixed(1) + " GB";
+  if (n > 1e6) return (n/1e6).toFixed(0) + " MB";
+  return (n/1e3).toFixed(0) + " KB";
+}
+function toast(msg, kind) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.className = "toast";
+  if (kind === "error") t.classList.add("error");
+  else if (kind === "success") t.classList.add("success");
+  t.classList.add("show");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.remove("show"), 3500);
+}
+
+function buildSearchBlob(item) {
+  return [
+    item.title, item.original_title, item.studio, item.library,
+    (item.genres || []).join(" "),
+    (item.directors || []).join(" "),
+    item.year ? String(item.year) : "",
+    item.resolution || "",
+    item.content_rating || "",
+  ].join(" ").toLowerCase();
+}
+const isUnwatched = (i) => i.type === "movie" ? !i.view_count : (i.viewed_count || 0) < (i.episode_count || 0);
+const isRecent = (i, days=30) => i.added_at && (Date.now() - new Date(i.added_at).getTime() < days*86400000);
+
+async function fetchLibrary() {
+  for (const path of ["library.json.gz", "library.json"]) {
+    try {
+      const r = await fetch(path, { cache: "no-cache" });
+      if (!r.ok) continue;
+      const d = await r.json();
+      return d;
+    } catch (e) {}
+  }
+  return null;
+}
+async function fetchStatus() {
+  try {
+    const r = await fetch("api/status", { cache: "no-cache" });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch (e) { return null; }
+}
+async function fetchPrefs() {
+  try {
+    const r = await fetch("api/preferences", { cache: "no-cache" });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch (e) { return null; }
+}
+async function fetchConfigSummary() {
+  try {
+    const r = await fetch("api/config-summary", { cache: "no-cache" });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch (e) { return null; }
+}
+async function fetchNotifyServices() {
+  try {
+    const r = await fetch("api/notify-services", { cache: "no-cache" });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch (e) { return null; }
+}
+
+function updateMeta(d, status) {
+  const parts = [];
+  if (d?.server?.name) parts.push(`<strong>${esc(d.server.name)}</strong>`);
+  if (d?.server?.version) parts.push(`plex ${esc(d.server.version)}`);
+  let html = parts.join(" · ");
+  if (status?.scanning) {
+    html += `<br><span class="pulse"></span>scanning…`;
+  } else if (status?.last_scan) {
+    html += `<br>scanned ${fmtRelative(status.last_scan)}`;
+    if (status.last_duration_s) html += ` (${status.last_duration_s}s)`;
+  } else if (d?.generated_at) {
+    html += `<br>generated ${fmtDate(d.generated_at)}`;
+  }
+  $("meta").innerHTML = html || "no data yet";
+  $("gen-at").textContent = d?.generated_at ? "generated: " + d.generated_at : "";
+
+  if (status?.last_error) {
+    $("error-banner").style.display = "block";
+    $("error-banner").textContent = "last scan error: " + status.last_error;
+  } else {
+    $("error-banner").style.display = "none";
+  }
+}
+
+function applyDefaultsFromPrefs() {
+  if (!PREFS) return;
+  if (!$("q").value) {
+    if ($("sort").value === "title" && PREFS.default_sort) $("sort").value = PREFS.default_sort;
+    if ($("type").value === "all" && PREFS.default_type) $("type").value = PREFS.default_type;
+  }
+  BATCH = Math.max(10, Math.min(500, parseInt(PREFS.batch_size) || BATCH_DEFAULT));
+}
+
+function loadData(d) {
+  DATA = d;
+  ITEMS = [...(d.movies || []), ...(d.shows || [])];
+  ITEMS.forEach(i => i._blob = buildSearchBlob(i));
+
+  const libs = [...new Set(ITEMS.map(i => i.library).filter(Boolean))].sort();
+  const curBrowse = $("library").value;
+  $("library").innerHTML = '<option value="">all libraries</option>' +
+    libs.map(l => `<option value="${esc(l)}"${l === curBrowse ? " selected" : ""}>${esc(l)}</option>`).join("");
+
+  const curPref = PREFS?.default_library || "";
+  $("pref-library").innerHTML = '<option value="">(all libraries)</option>' +
+    libs.map(l => `<option value="${esc(l)}"${l === curPref ? " selected" : ""}>${esc(l)}</option>`).join("");
+
+  if (PREFS?.default_library && !$("library").value && libs.includes(PREFS.default_library)) {
+    $("library").value = PREFS.default_library;
+  }
+
+  const c = d.counts || {};
+  $("s-movies").textContent = c.movies ?? 0;
+  $("s-shows").textContent = c.shows ?? 0;
+  $("s-seasons").textContent = c.seasons ?? 0;
+  $("s-episodes").textContent = c.episodes ?? 0;
+  const totalBytes = ITEMS.reduce((a,i) => a + (i.file_size_bytes || 0), 0);
+  $("s-size").textContent = (totalBytes/1e9).toFixed(0);
+  $("stats").hidden = false;
+
+  computeStats();
+  computeDupes();
+  applyHashState();
+  filterAndRender();
+}
+
+function plexLink(item) {
+  const machine = DATA?.server?.machine_identifier;
+  if (!machine || !item.rating_key) return null;
+  return `https://app.plex.tv/desktop/#!/server/${machine}/details?key=%2Flibrary%2Fmetadata%2F${item.rating_key}`;
+}
+
+function rowHtml(item, q) {
+  const isShow = item.type === "show";
+  const tag = `<span class="tag ${item.type}">${item.type}</span>`;
+  const resBadge = item.resolution === "4K" ? '<span class="badge uhd">4K</span>'
+    : (item.resolution === "1080p" || item.resolution === "720p") ? `<span class="badge hd">${item.resolution}</span>`
+    : item.resolution === "SD" ? '<span class="badge sd">SD</span>' : "";
+  const watchedBadge = !isUnwatched(item) && (item.view_count || item.viewed_count) ? '<span class="badge watched">✓</span>' : "";
+  const title = `<div class="title-cell">${highlight(item.title || "", q)}<span class="yr">${item.year || ""}</span><span class="badges">${resBadge}${watchedBadge}</span></div>`;
+
+  const ids = item.external_ids || {};
+  const links = [];
+  const pl = plexLink(item);
+  if (pl) links.push(`<a href="${pl}" target="_blank" rel="noopener">▶ plex</a>`);
+  if (ids.imdb) links.push(`<a href="https://www.imdb.com/title/${ids.imdb}/" target="_blank" rel="noopener">imdb</a>`);
+  if (ids.tmdb) links.push(`<a href="https://www.themoviedb.org/${isShow ? "tv" : "movie"}/${ids.tmdb}" target="_blank" rel="noopener">tmdb</a>`);
+
+  const detail = `<div class="detail">
+    <span class="lib">${esc(item.library || "")}</span>${item.studio ? " · " + esc(item.studio) : ""}${item.content_rating ? " · " + esc(item.content_rating) : ""}
+    ${item.genres?.length ? "<br>" + esc(item.genres.join(" · ")) : ""}
+    ${item.directors?.length ? "<br>dir: " + esc(item.directors.join(", ")) : ""}
+    ${isShow && item.seasons?.length ? `<div class="seasons">${
+      item.seasons.map(s => {
+        const unwatched = (s.viewed_count || 0) < (s.episode_count || 0);
+        return `<span class="season-chip ${unwatched ? "unwatched" : ""}">S${String(s.season_number ?? "?").padStart(2,"0")} · ${s.episode_count || 0} ep</span>`;
+      }).join("")
+    }</div>` : ""}
+    ${links.length ? `<div class="links">${links.join("")}</div>` : ""}
+  </div>`;
+
+  const numA = isShow
+    ? `<div class="num num-hide"><strong>${item.season_count || 0}</strong> seasons<br><span>${item.episode_count || 0} ep</span></div>`
+    : `<div class="num num-hide"><strong>${item.duration_min || "—"}</strong> min<br><span>${item.file_size_bytes ? fmtBytes(item.file_size_bytes) : ""}</span></div>`;
+  const numB = `<div class="num"><strong>${fmtDate(item.added_at) || "—"}</strong>${item.rating ? `<br><span>★ ${item.rating}</span>` : ""}</div>`;
+
+  return `<div class="row" data-key="${item.rating_key}">${tag}${title}${numA}<div class="detail-hide">${detail}</div>${numB}</div>`;
+}
+
+function filterAndRender() {
+  if (!ITEMS.length) return;
+  const q = $("q").value.trim().toLowerCase();
+  const type = $("type").value;
+  const lib = $("library").value;
+  const sort = $("sort").value;
+
+  let list = ITEMS;
+  if (type !== "all") list = list.filter(i => i.type === type);
+  if (lib) list = list.filter(i => i.library === lib);
+  if (QUICK.recent) list = list.filter(isRecent);
+  if (QUICK.unwatched) list = list.filter(isUnwatched);
+  if (QUICK.uhd) list = list.filter(i => i.resolution === "4K");
+  if (q) {
+    const tokens = q.split(/\s+/).filter(Boolean);
+    list = list.filter(i => tokens.every(t => i._blob.includes(t)));
+  }
+
+  switch (sort) {
+    case "year-desc": list = list.slice().sort((a,b) => (b.year||0) - (a.year||0)); break;
+    case "year-asc": list = list.slice().sort((a,b) => (a.year||0) - (b.year||0)); break;
+    case "added-desc": list = list.slice().sort((a,b) => (b.added_at||"").localeCompare(a.added_at||"")); break;
+    case "rating-desc": list = list.slice().sort((a,b) => (b.rating||0) - (a.rating||0)); break;
+    case "duration-desc": list = list.slice().sort((a,b) => (b.duration_min||0) - (a.duration_min||0)); break;
+    default: list = list.slice().sort((a,b) => (a.title||"").localeCompare(b.title||""));
+  }
+
+  FILTERED = list;
+  RENDERED = 0;
+  $("s-shown").textContent = list.length;
+  $("results").innerHTML = "";
+
+  if (!list.length) {
+    $("results").innerHTML = '<div class="empty">nothing matches</div>';
+    $("sentinel").hidden = true;
+  } else {
+    $("sentinel").hidden = false;
+    renderMore();
+  }
+  writeHashState();
+}
+
+function renderMore() {
+  if (RENDERED >= FILTERED.length) { $("sentinel").hidden = true; return; }
+  const q = $("q").value.trim().toLowerCase();
+  const slice = FILTERED.slice(RENDERED, RENDERED + BATCH);
+  const frag = document.createElement("div");
+  frag.innerHTML = slice.map(i => rowHtml(i, q)).join("");
+  while (frag.firstChild) $("results").appendChild(frag.firstChild);
+  RENDERED += slice.length;
+  if (RENDERED >= FILTERED.length) {
+    $("sentinel").hidden = true;
+  } else {
+    $("sentinel").textContent = `showing ${RENDERED} of ${FILTERED.length}…`;
+  }
+}
+
+function setupObserver() {
+  if (OBSERVER) OBSERVER.disconnect();
+  OBSERVER = new IntersectionObserver(entries => {
+    if (entries.some(e => e.isIntersecting)) renderMore();
+  }, { rootMargin: "400px" });
+  OBSERVER.observe($("sentinel"));
+}
+
+function computeStats() {
+  const tally = (arr) => {
+    const m = new Map();
+    for (const v of arr) m.set(v, (m.get(v) || 0) + 1);
+    return [...m.entries()].sort((a,b) => b[1] - a[1]);
+  };
+  const genres = tally(ITEMS.flatMap(i => i.genres || [])).slice(0, 10);
+  const decades = tally(ITEMS.filter(i => i.year).map(i => Math.floor(i.year/10)*10 + "s"))
+    .sort((a,b) => parseInt(b[0]) - parseInt(a[0]));
+  const libs = tally(ITEMS.map(i => i.library).filter(Boolean));
+  const render = (rows) => rows.map(([k,v]) => `<div class="bar"><span class="lbl">${esc(k)}</span><span class="v">${v}</span></div>`).join("");
+  $("stat-genres").innerHTML = render(genres);
+  $("stat-decades").innerHTML = render(decades);
+  $("stat-libs").innerHTML = render(libs);
+}
+
+function computeDupes() {
+  const map = new Map();
+  for (const i of ITEMS) {
+    const key = (i.title || "").toLowerCase().trim() + "|" + i.type;
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(i);
+  }
+  const dupes = [...map.values()].filter(v => v.length > 1);
+  if (!dupes.length) {
+    $("dupes-list").textContent = "no duplicate titles found.";
+    return;
+  }
+  $("dupes-list").innerHTML = dupes.map(group =>
+    `<div style="padding: 6px 0; border-bottom: 1px solid var(--rule);">
+      <strong style="color: var(--ink);">${esc(group[0].title)}</strong> (${group[0].type}) ×${group.length}
+      <br><span>${group.map(g => `${g.library} · ${g.year || "?"}`).join(" / ")}</span>
+    </div>`
+  ).join("");
+}
+
+function exportCSV() {
+  if (!FILTERED.length) return;
+  const fields = ["type","title","year","library","studio","genres","duration_min","resolution","file_size_bytes","added_at","rating","content_rating","season_count","episode_count","imdb","tmdb"];
+  const rows = [fields.join(",")];
+  for (const i of FILTERED) {
+    const row = fields.map(f => {
+      let v;
+      if (f === "genres") v = (i.genres || []).join("; ");
+      else if (f === "imdb") v = i.external_ids?.imdb || "";
+      else if (f === "tmdb") v = i.external_ids?.tmdb || "";
+      else v = i[f] ?? "";
+      v = String(v).replace(/"/g, '""');
+      return /[",\n]/.test(v) ? `"${v}"` : v;
+    });
+    rows.push(row.join(","));
+  }
+  const blob = new Blob([rows.join("\n")], { type: "text/csv" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `plex-export-${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function randomPick() {
+  if (!FILTERED.length) return;
+  const idx = Math.floor(Math.random() * FILTERED.length);
+  while (RENDERED <= idx) renderMore();
+  const row = $("results").children[idx];
+  if (row) {
+    row.scrollIntoView({ behavior: "smooth", block: "center" });
+    row.classList.add("flash");
+    setTimeout(() => row.classList.remove("flash"), 1800);
+  }
+}
+
+function writeHashState() {
+  const s = new URLSearchParams();
+  if ($("q").value) s.set("q", $("q").value);
+  if ($("type").value !== "all") s.set("t", $("type").value);
+  if ($("library").value) s.set("lib", $("library").value);
+  if ($("sort").value !== "title") s.set("s", $("sort").value);
+  for (const k of Object.keys(QUICK)) if (QUICK[k]) s.set(k, "1");
+  const str = s.toString();
+  history.replaceState(null, "", str ? "#" + str : location.pathname + location.search);
+}
+function applyHashState() {
+  const s = new URLSearchParams(location.hash.slice(1));
+  if (s.get("q")) $("q").value = s.get("q");
+  if (s.get("t")) $("type").value = s.get("t");
+  if (s.get("lib")) $("library").value = s.get("lib");
+  if (s.get("s")) $("sort").value = s.get("s");
+  for (const k of Object.keys(QUICK)) QUICK[k] = s.get(k) === "1";
+  for (const btn of document.querySelectorAll(".chip[data-quick]")) {
+    btn.classList.toggle("on", QUICK[btn.dataset.quick]);
+  }
+}
+
+async function triggerRefresh() {
+  const btn = $("refresh-btn");
+  btn.disabled = true;
+  try {
+    const r = await fetch("api/refresh", { method: "POST" });
+    const j = await r.json();
+    if (r.ok) {
+      toast("scan started");
+      pollStatus();
+    } else {
+      toast(j.message || "could not start scan", "error");
+    }
+  } catch (e) {
+    toast("network error: " + e.message, "error");
+  } finally {
+    setTimeout(() => btn.disabled = false, 2000);
+  }
+}
+
+let lastScanTimestamp = null;
+async function pollStatus() {
+  const status = await fetchStatus();
+  updateMeta(DATA, status);
+  if (!status) return;
+  if (status.last_scan && status.last_scan !== lastScanTimestamp) {
+    if (lastScanTimestamp !== null) {
+      const fresh = await fetchLibrary();
+      if (fresh) {
+        loadData(fresh);
+        toast("library updated", "success");
+      }
+    }
+    lastScanTimestamp = status.last_scan;
+  }
+  $("about-version").textContent = status.version || "—";
+  $("about-last-scan").textContent = status.last_scan ? new Date(status.last_scan).toLocaleString() : "—";
+  $("about-duration").textContent = status.last_duration_s ? status.last_duration_s + " s" : "—";
+  $("about-error").textContent = status.last_error || "none";
+  if (DATA?.server?.name) {
+    $("about-server").textContent = `${DATA.server.name} (Plex ${DATA.server.version || "?"})`;
+  }
+}
+
+// --- preferences view ---
+
+function applyPrefsToForm() {
+  if (!PREFS) return;
+  $("pref-sort").value = PREFS.default_sort;
+  $("pref-type").value = PREFS.default_type;
+  $("pref-library").value = PREFS.default_library;
+  $("pref-batch").value = PREFS.batch_size;
+  $("pref-hide-watched").checked = !!PREFS.hide_watched_default;
+  $("pref-uhd-default").checked = !!PREFS.show_4k_only_default;
+  $("pref-recent-default").checked = !!PREFS.show_recent_default;
+  $("pref-auto-refresh").checked = !!PREFS.auto_refresh_on_open;
+}
+
+async function savePrefs() {
+  const body = {
+    default_sort: $("pref-sort").value,
+    default_type: $("pref-type").value,
+    default_library: $("pref-library").value,
+    batch_size: parseInt($("pref-batch").value) || BATCH_DEFAULT,
+    hide_watched_default: $("pref-hide-watched").checked,
+    show_4k_only_default: $("pref-uhd-default").checked,
+    show_recent_default: $("pref-recent-default").checked,
+    auto_refresh_on_open: $("pref-auto-refresh").checked,
+  };
+  try {
+    const r = await fetch("api/preferences", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (r.ok && j.ok) {
+      PREFS = j.preferences;
+      BATCH = Math.max(10, Math.min(500, parseInt(PREFS.batch_size) || BATCH_DEFAULT));
+      toast("preferences saved", "success");
+    } else {
+      toast(j.message || "save failed", "error");
+    }
+  } catch (e) {
+    toast("network error: " + e.message, "error");
+  }
+}
+
+async function resetPrefs() {
+  if (!confirm("Reset display preferences to defaults?")) return;
+  const defaults = {
+    default_sort: "title",
+    default_type: "all",
+    default_library: "",
+    batch_size: BATCH_DEFAULT,
+    hide_watched_default: false,
+    show_4k_only_default: false,
+    show_recent_default: false,
+    auto_refresh_on_open: false,
+  };
+  try {
+    const r = await fetch("api/preferences", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(defaults),
+    });
+    const j = await r.json();
+    if (r.ok) {
+      PREFS = j.preferences;
+      applyPrefsToForm();
+      toast("preferences reset", "success");
+    }
+  } catch (e) {
+    toast("network error: " + e.message, "error");
+  }
+}
+
+async function populateServerSummary() {
+  const cfg = await fetchConfigSummary();
+  if (!cfg) {
+    $("server-summary").innerHTML = '<div class="ro">could not load config summary</div>';
+    return;
+  }
+  $("server-summary").innerHTML = `
+    <label>Plex URL</label><div class="ro"><code>${esc(cfg.plex_url || "—")}</code></div>
+    <label>Plex token</label><div class="ro">${cfg.plex_token_configured ? '<span class="ok-check">✓ configured</span>' : '<span class="bad-check">✗ not set</span>'}</div>
+    <label>Scan interval</label><div class="ro">${cfg.interval_hours} hours</div>
+    <label>Parallel jobs</label><div class="ro">${cfg.parallel_jobs}</div>
+    <label>Gzip output</label><div class="ro">${cfg.gzip_output ? "enabled" : "disabled"}</div>
+    <label>Log level</label><div class="ro"><code>${esc(cfg.log_level)}</code></div>
+  `;
+
+  const svcInfo = await fetchNotifyServices();
+  const cleanedService = (cfg.notify_service || "").replace(/^notify\./,"");
+  const svcExists = cleanedService && svcInfo?.services?.includes(cleanedService);
+  $("notify-summary").innerHTML = `
+    <label>Notify service</label>
+    <div class="ro">${cleanedService
+      ? `<code>notify.${esc(cleanedService)}</code> ${svcExists ? '<span class="ok-check">✓ found</span>' : '<span class="bad-check">✗ not found on this HA instance</span>'}`
+      : '<span>none — set notify_service in add-on config to enable notifications</span>'}</div>
+    <label>Notify on success</label><div class="ro">${cfg.notify_on_success ? "enabled" : "disabled"}</div>
+    <label>Notify on error</label><div class="ro">${cfg.notify_on_error ? "enabled" : "disabled"}</div>
+    <label>Notify only on changes</label><div class="ro">${cfg.notify_only_on_changes ? "enabled" : "disabled"}</div>
+    <label>Available notify services</label>
+    <div class="ro" style="line-height:1.7;">${svcInfo?.services?.length
+      ? svcInfo.services.map(s => `<code style="margin-right:6px;">notify.${esc(s)}</code>`).join("")
+      : "none discovered"}</div>
+  `;
+
+  // Telegram summary
+  $("telegram-summary").innerHTML = `
+    <label>Status</label>
+    <div class="ro">${cfg.telegram_enabled
+      ? (cfg.telegram_connected
+          ? '<span class="ok-check">✓ enabled and connected</span>'
+          : (cfg.telegram_bot_token_configured
+              ? '<span class="bad-check">⚠ enabled but not connected — check logs</span>'
+              : '<span class="bad-check">✗ enabled but no bot token set</span>'))
+      : '<span>disabled</span>'}</div>
+    <label>Bot token</label><div class="ro">${cfg.telegram_bot_token_configured ? '<span class="ok-check">✓ configured</span>' : '<span class="bad-check">✗ not set</span>'}</div>
+    <label>Allowed chat IDs</label><div class="ro">${cfg.telegram_allowed_chat_ids_count > 0 ? `${cfg.telegram_allowed_chat_ids_count} configured` : '<span class="bad-check">✗ none — no one can use the bot</span>'}</div>
+    <label>Notify on success</label><div class="ro">${cfg.telegram_notify_on_success ? "enabled" : "disabled"}</div>
+    <label>Notify on error</label><div class="ro">${cfg.telegram_notify_on_error ? "enabled" : "disabled"}</div>
+    <label>Answer commands</label><div class="ro">${cfg.telegram_answer_commands ? "enabled" : "disabled"}</div>
+  `;
+}
+
+async def testNotify() {
+  const btn = $("test-notify-btn");
+  btn.disabled = true;
+  try {
+    const r = await fetch("api/test-notify", { method: "POST" });
+    const j = await r.json();
+    if (r.ok && j.ok) {
+      toast(`test notification sent via notify.${j.service}`, "success");
+    } else {
+      toast(j.message || "test failed", "error");
+    }
+  } catch (e) {
+    toast("network error: " + e.message, "error");
+  } finally {
+    setTimeout(() => btn.disabled = false, 2000);
+  }
+}
+
+async function testTelegram() {
+  const btn = $("test-telegram-btn");
+  btn.disabled = true;
+  try {
+    const r = await fetch("api/test-telegram", { method: "POST" });
+    const j = await r.json();
+    if (r.ok && j.ok) {
+      toast(j.message || "telegram test sent", "success");
+    } else {
+      toast(j.message || "telegram test failed", "error");
+    }
+  } catch (e) {
+    toast("network error: " + e.message, "error");
+  } finally {
+    setTimeout(() => btn.disabled = false, 2000);
+  }
+}
+
+function switchView(name) {
+  document.querySelectorAll(".nav-btn").forEach(b => b.classList.toggle("active", b.dataset.view === name));
+  document.querySelectorAll(".view").forEach(v => v.classList.remove("active"));
+  $("view-" + name).classList.add("active");
+  if (name === "prefs") populateServerSummary();
+}
+
+// --- wire up ---
+$("q").addEventListener("input", () => {
+  clearTimeout(DEBOUNCE);
+  DEBOUNCE = setTimeout(filterAndRender, 120);
+});
+["type","sort","library"].forEach(id => $(id).addEventListener("change", filterAndRender));
+
+document.querySelectorAll(".chip[data-quick]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    QUICK[btn.dataset.quick] = !QUICK[btn.dataset.quick];
+    btn.classList.toggle("on");
+    filterAndRender();
+  });
+});
+
+$("random-btn").addEventListener("click", randomPick);
+$("stats-btn").addEventListener("click", () => $("stats-panel").classList.toggle("open"));
+$("dupes-btn").addEventListener("click", () => $("dupes-panel").classList.toggle("open"));
+$("csv-btn").addEventListener("click", exportCSV);
+$("refresh-btn").addEventListener("click", triggerRefresh);
+$("clear-btn").addEventListener("click", () => {
+  $("q").value = ""; $("type").value = "all"; $("library").value = ""; $("sort").value = "title";
+  for (const k of Object.keys(QUICK)) QUICK[k] = false;
+  document.querySelectorAll(".chip[data-quick]").forEach(b => b.classList.remove("on"));
+  filterAndRender();
+});
+
+document.querySelectorAll(".nav-btn").forEach(b => b.addEventListener("click", () => switchView(b.dataset.view)));
+$("prefs-save").addEventListener("click", savePrefs);
+$("prefs-reset").addEventListener("click", resetPrefs);
+$("test-notify-btn").addEventListener("click", testNotify);
+$("test-telegram-btn").addEventListener("click", testTelegram);
+
+document.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT" || e.target.tagName === "TEXTAREA") {
+    if (e.key === "Escape") { e.target.blur(); }
+    return;
+  }
+  if (e.key === "/") { e.preventDefault(); $("q").focus(); }
+  else if (e.key === "r" || e.key === "R") { randomPick(); }
+  else if (e.key === "Escape") { $("clear-btn").click(); }
+});
+
+setupObserver();
+
+// initial load
+(async () => {
+  PREFS = await fetchPrefs() || {
+    default_sort: "title", default_type: "all", default_library: "",
+    batch_size: BATCH_DEFAULT, hide_watched_default: false,
+    show_4k_only_default: false, show_recent_default: false,
+    auto_refresh_on_open: false,
+  };
+  applyPrefsToForm();
+  applyDefaultsFromPrefs();
+
+  if (PREFS.show_recent_default) { QUICK.recent = true; document.querySelector('[data-quick="recent"]').classList.add("on"); }
+  if (PREFS.show_4k_only_default) { QUICK.uhd = true; document.querySelector('[data-quick="uhd"]').classList.add("on"); }
+  if (PREFS.hide_watched_default) { QUICK.unwatched = true; document.querySelector('[data-quick="unwatched"]').classList.add("on"); }
+
+  const status = await fetchStatus();
+  lastScanTimestamp = status?.last_scan || null;
+  const d = await fetchLibrary();
+  if (d) {
+    loadData(d);
+    updateMeta(d, status);
+  } else {
+    $("results").innerHTML = '<div class="empty">' + (status?.scanning ? "scanning library — refresh in a minute…" : "no library data yet — click ↻ refresh now") + '</div>';
+    updateMeta(null, status);
+  }
+
+  if (PREFS.auto_refresh_on_open && !status?.scanning) {
+    fetch("api/refresh", { method: "POST" }).catch(() => {});
+  }
+
+  STATUS_TIMER = setInterval(pollStatus, 5000);
+})();
+</script>
+</body>
+</html>
