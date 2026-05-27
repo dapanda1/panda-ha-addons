@@ -1,5 +1,5 @@
 name: "Plex Library Index"
-version: "1.2.3"
+version: "1.2.4"
 slug: "plex_library_index"
 description: "Scans Plex library and serves a searchable index inside Home Assistant. Sidebar-only, no external port."
 arch:

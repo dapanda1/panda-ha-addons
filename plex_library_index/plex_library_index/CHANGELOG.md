@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.4 — 2026-05-26
+
+### Fixed
+- **Add-on still failed to start in 1.2.3 despite the CR-stripping fix.** Root cause: the previous `sed 's/\r$//'` only strips `\r` immediately before `\n`, and may not handle every edge case (some Git configurations on Windows produce `\r` characters in unusual positions). Switched to `tr -d '\r'` which strips every CR byte in the file regardless of position.
+- Added a build-time verification: after normalization, the s6 service scripts are checked for any remaining CR bytes. If any are found, the image build fails loudly with the offending file path, so the problem is visible in the build log instead of silently producing a broken image.
+
+### Note for users
+If the previous version (1.2.3) appeared to be installed but exhibited the same bashio startup error, this was due to Docker layer caching. To force a clean rebuild after this update: **Settings → Add-ons → Plex Library Index → ⋮ → Rebuild** (not just "Restart" or "Update").
+
 ## 1.2.3 — 2026-05-26
 
 ### Changed
