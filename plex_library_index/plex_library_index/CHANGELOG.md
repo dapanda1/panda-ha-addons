@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.2.3 — 2026-05-26
+
+### Changed
+- Restored the bashio shebang in s6 service scripts (`#!/usr/bin/with-contenv bashio`) to match the structural conventions of the user's other add-ons (WebURL SMS Login, Email WOL). The defensive CR-stripping step in the Dockerfile makes this safe against Windows CRLF issues regardless of upload path.
+- Synced `io.hass.version` label to the current version.
+
+## 1.2.2 — 2026-05-26
+
+### Fixed
+- **Add-on failed to start with `unable to exec bashio::log.info`.** Root cause: the s6 service scripts (`run`, `up`) were uploaded with CRLF line endings on Windows, breaking the bashio interpreter line. Two-part fix:
+  - Removed the bashio dependency entirely — the scripts only ran a Python file, so plain `#!/command/with-contenv sh` is simpler and more robust.
+  - Added a defensive `sed -i 's/\r$//'` step in the Dockerfile that strips any CR characters at build time, so the add-on can't be broken by CRLF uploads in the future.
+- Updated `io.hass.version` label to track the current version.
+
+### Upgrade note
+Existing installations: pull the new commit and rebuild the add-on. No config changes needed.
+
 ## 1.2.1 — 2026-05-24
 
 ### Fixed

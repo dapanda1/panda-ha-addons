@@ -13,12 +13,15 @@ COPY rootfs /
 COPY server.py exporter.py migrate.py telegram_bot.py /usr/src/
 COPY www/ /usr/src/www/
 
-RUN chmod a+x /etc/s6-overlay/s6-rc.d/server/run \
+# Defensive: strip any CR characters that Windows may have introduced,
+# then mark s6 scripts executable.
+RUN find /etc/s6-overlay/s6-rc.d -type f -exec sed -i 's/\r$//' {} \; \
+    && chmod a+x /etc/s6-overlay/s6-rc.d/server/run \
     && chmod a+x /etc/s6-overlay/s6-rc.d/init-migrate/up
 
 LABEL \
   io.hass.name="Plex Library Index" \
   io.hass.description="Plex library exporter + ingress-served search page" \
   io.hass.type="addon" \
-  io.hass.version="1.0.0" \
+  io.hass.version="1.2.3" \
   io.hass.arch="aarch64"
