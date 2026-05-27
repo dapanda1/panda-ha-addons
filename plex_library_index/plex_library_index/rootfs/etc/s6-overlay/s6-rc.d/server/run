@@ -1,3 +1,10 @@
 #!/usr/bin/with-contenv bashio
-bashio::log.info "[$(date -Iseconds)] server: starting"
+
+bashio::log.info "[$(date -Iseconds)] running schema migration"
+if ! python3 /usr/src/migrate.py; then
+    bashio::log.error "[$(date -Iseconds)] migration failed"
+    exit 1
+fi
+
+bashio::log.info "[$(date -Iseconds)] starting Plex Library Index server"
 exec python3 /usr/src/server.py

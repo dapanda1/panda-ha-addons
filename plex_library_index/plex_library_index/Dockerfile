@@ -16,9 +16,7 @@ RUN apk add --no-cache python3 py3-pip \
     && python3 -c "import plexapi; import aiohttp; print('pip imports OK: plexapi', plexapi.VERSION, 'aiohttp', aiohttp.__version__)" \
     && rm -rf /root/.cache
 
-# Cache buster — ARG reference in an echo so the COPY layers below depend on
-# BUILD_VERSION. Without this, Docker will reuse cached COPY layers even
-# when the file contents differ.
+# Cache buster — ensures the COPY layers below depend on BUILD_VERSION.
 RUN echo "Building Plex Library Index version ${BUILD_VERSION}"
 
 COPY rootfs /
@@ -27,30 +25,28 @@ COPY www/ /usr/src/www/
 
 # Defensive: strip ALL carriage return bytes from s6 scripts and Python
 # files. Uses `tr` which operates on bytes directly. Then verify the
-# critical service scripts contain no CR — fail the build loudly if they
-# somehow still do.
+# critical service script contains no CR — fail the build loudly if it
+# somehow still does.
 RUN set -e; \
     echo "Normalizing line endings for ${BUILD_VERSION}..."; \
     for f in $(find /etc/s6-overlay/s6-rc.d -type f) /usr/src/*.py; do \
         tr -d '\r' < "$f" > "$f.norm" && mv "$f.norm" "$f"; \
     done; \
-    for f in /etc/s6-overlay/s6-rc.d/server/run /etc/s6-overlay/s6-rc.d/init-migrate/up; do \
-        if od -c "$f" | grep -q '\\r'; then \
-            echo "FATAL: $f still contains CR after normalization" >&2; \
-            od -c "$f" | head -3 >&2; \
-            exit 1; \
-        fi; \
-        echo "[build] verified $f is CR-free"; \
-        echo "[build] shebang: $(head -1 $f)"; \
-    done; \
-    chmod a+x /etc/s6-overlay/s6-rc.d/server/run; \
-    chmod a+x /etc/s6-overlay/s6-rc.d/init-migrate/up
+    f=/etc/s6-overlay/s6-rc.d/server/run; \
+    if od -c "$f" | grep -q '\\r'; then \
+        echo "FATAL: $f still contains CR after normalization" >&2; \
+        od -c "$f" | head -3 >&2; \
+        exit 1; \
+    fi; \
+    echo "[build] verified $f is CR-free"; \
+    echo "[build] shebang: $(head -1 $f)"; \
+    chmod a+x "$f"
 
 LABEL \
   io.hass.name="Plex Library Index" \
   io.hass.description="Plex library exporter + ingress-served search page" \
   io.hass.type="addon" \
-  io.hass.version="1.2.7" \
+  io.hass.version="1.2.8" \
   io.hass.arch="aarch64" \
   org.opencontainers.image.title="Plex Library Index" \
   org.opencontainers.image.description="Plex library exporter and searchable index, served via HA ingress." \

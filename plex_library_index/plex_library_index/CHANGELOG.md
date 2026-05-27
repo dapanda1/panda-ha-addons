@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.8 — 2026-05-26
+
+### Critical fix — this is the real root cause
+- **Removed the `init-migrate` s6 oneshot.** Per the s6 documentation: oneshot `up` scripts are parsed by `s6-rc-compile` using execline-style parsing, NOT as POSIX shell scripts. The shebang line is ignored entirely. This explains why every previous attempt to fix the script via shebang adjustments failed: the shebang was never honored to begin with. The script's first line was being interpreted as an argv string, producing errors like `unable to exec bashio::log.info` or `unable to exec TS=$(date`.
+- **Folded schema migration into the longrun `server/run` script.** Longrun scripts DO honor their shebang (they run under `s6-supervise`, not `s6-rc-compile`). So `#!/usr/bin/with-contenv bashio` works correctly there. The new `server/run` runs `migrate.py` first, then execs `server.py`.
+- Net result: the add-on has one s6 service (longrun `server`) instead of two (oneshot `init-migrate` + longrun `server`). Same behavior, simpler structure, actually works.
+
+### Build cache fix from 1.2.7 retained
+- The `BUILD_VERSION` cache-bust in the Dockerfile is kept so future updates won't be hidden by Docker layer caching.
+
 ## 1.2.7 — 2026-05-26
 
 ### Critical fix
