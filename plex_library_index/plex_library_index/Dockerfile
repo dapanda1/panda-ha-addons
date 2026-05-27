@@ -7,6 +7,7 @@ ENV LANG=C.UTF-8 \
 
 RUN apk add --no-cache python3 py3-pip \
     && pip3 install --no-cache-dir plexapi==4.16.1 aiohttp==3.10.5 \
+    && python3 -c "import plexapi; import aiohttp; print('pip imports OK: plexapi', plexapi.VERSION, 'aiohttp', aiohttp.__version__)" \
     && rm -rf /root/.cache
 
 COPY rootfs /
@@ -35,5 +36,9 @@ LABEL \
   io.hass.name="Plex Library Index" \
   io.hass.description="Plex library exporter + ingress-served search page" \
   io.hass.type="addon" \
-  io.hass.version="1.2.4" \
-  io.hass.arch="aarch64"
+  io.hass.version="1.2.5" \
+  io.hass.arch="aarch64" \
+  org.opencontainers.image.title="Plex Library Index" \
+  org.opencontainers.image.description="Plex library exporter and searchable index, served via HA ingress." \
+  org.opencontainers.image.source="https://github.com/noah/plex-library-index" \
+  org.opencontainers.image.licenses="MIT"

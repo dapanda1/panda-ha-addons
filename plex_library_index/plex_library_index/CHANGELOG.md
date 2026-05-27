@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.5 — 2026-05-26
+
+### Diagnostic / cleanup
+- **Added explicit logging** to s6 service scripts so the add-on log shows progress messages even when Python crashes immediately. The `init-migrate` script now logs "starting", "done" / "FAILED with exit code N".
+- **Removed deprecated `build.yaml`** — the Supervisor now requires build parameters inline in the Dockerfile. The OCI labels that were in build.yaml are now LABEL entries in the Dockerfile.
+- **Added a Python import verification step** to the Dockerfile so the build fails clearly if `plexapi` or `aiohttp` doesn't install correctly.
+
 ## 1.2.4 — 2026-05-26
 
 ### Fixed

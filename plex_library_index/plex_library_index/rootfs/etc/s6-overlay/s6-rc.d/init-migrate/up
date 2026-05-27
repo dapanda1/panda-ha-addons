@@ -1,3 +1,9 @@
 #!/usr/bin/with-contenv bashio
-bashio::log.info "Running schema migration"
-exec python3 /usr/src/migrate.py
+bashio::log.info "init-migrate: starting"
+if python3 /usr/src/migrate.py; then
+    bashio::log.info "init-migrate: done"
+else
+    rc=$?
+    bashio::log.error "init-migrate: FAILED with exit code $rc"
+    exit $rc
+fi
