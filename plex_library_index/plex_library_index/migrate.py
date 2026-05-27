@@ -13,7 +13,7 @@ import sys
 import urllib.error
 import urllib.request
 
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 SCHEMA_FILE = "/data/.schema_version"
 OPTIONS_FILE = "/data/options.json"
 SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN", "")
@@ -111,10 +111,18 @@ def migrate_v2_to_v3(opts: dict) -> dict:
     return opts
 
 
+def migrate_v3_to_v4(opts: dict) -> dict:
+    """Add time-of-day scheduling. interval_hours kept as fallback."""
+    opts.setdefault("scan_time", "03:30")
+    opts.setdefault("scan_time_2", "")
+    return opts
+
+
 MIGRATIONS = [
     (1, migrate_v0_to_v1),
     (2, migrate_v1_to_v2),
     (3, migrate_v2_to_v3),
+    (4, migrate_v3_to_v4),
 ]
 
 

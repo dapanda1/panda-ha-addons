@@ -30,7 +30,7 @@ no exposed port.
 ### From this GitHub repository (recommended)
 
 1. In Home Assistant: **Settings → Add-ons → Add-on Store → ⋮ → Repositories**
-2. Add this repository's URL: `https://github.com/<your-username>/<this-repo>`
+2. Add this repository's URL: `https://github.com/dapanda1/panda-ha-addons`
 3. The repo appears in the store. Click into it, then click **Plex Library Index → Install**.
 4. Open **Configuration** and fill in `plex_url` and `plex_token`. Save.
 5. Click **Start**.

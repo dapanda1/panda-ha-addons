@@ -29,7 +29,7 @@ from aiohttp import web
 import exporter
 import telegram_bot
 
-VERSION = "1.2.0"
+VERSION = "1.3.2"
 
 OPTIONS_PATH = Path("/data/options.json")
 WWW_DIR = Path("/data/www")
@@ -54,6 +54,8 @@ DEFAULT_PREFS = {
     "show_4k_only_default": False,
     "show_recent_default": False,
     "auto_refresh_on_open": False,
+    "browser_notify_on_success": False,
+    "browser_notify_on_error": True,
 }
 
 # Mutable global state, read by /api/status
@@ -66,6 +68,8 @@ STATE = {
     "previous_counts": None,
     "next_scan_after": None,
     "version": VERSION,
+    "retry_after": None,
+    "consecutive_failures": 0,
 }
 scan_lock = asyncio.Lock()
 
@@ -337,6 +341,9 @@ async def run_scan():
             STATE["last_duration_s"] = round(duration, 1)
             STATE["previous_counts"] = previous_counts
             STATE["counts"] = counts
+            # Successful scan — reset retry backoff
+            STATE["retry_after"] = None
+            STATE["consecutive_failures"] = 0
 
             # Refresh cache so Telegram queries see new data
             invalidate_library_cache()
@@ -373,37 +380,166 @@ async def run_scan():
         except Exception as e:
             logging.exception("export failed")
             STATE["last_error"] = str(e)
-            if opts.get("notify_on_error") and opts.get("notify_service"):
-                await send_notification(
-                    opts["notify_service"],
-                    "Plex Library Index — scan failed",
-                    f"Error: {e}",
-                )
-            if opts.get("telegram_enabled") and opts.get("telegram_notify_on_error"):
-                await _telegram_broadcast(f"⚠️ Plex Library Index — scan failed\n\nError: {e}")
+
+            # Detect "Plex unreachable" style errors and schedule a quick retry.
+            # Cap at 2 quick retries — if both fail, give up and wait for the
+            # next normally scheduled scan.
+            MAX_QUICK_RETRIES = 2
+            is_connection_error = _is_connection_error(e)
+            if is_connection_error:
+                fails = STATE.get("consecutive_failures", 0) + 1
+                STATE["consecutive_failures"] = fails
+                if fails <= MAX_QUICK_RETRIES:
+                    # 1st retry at 5min, 2nd retry at 10min
+                    delay = 300 if fails == 1 else 600
+                    retry_at = datetime.now(timezone.utc).timestamp() + delay
+                    STATE["retry_after"] = retry_at
+                    logging.info(
+                        f"plex unreachable — quick retry #{fails}/{MAX_QUICK_RETRIES} "
+                        f"scheduled in {delay}s"
+                    )
+                else:
+                    # Out of quick retries — fall back to normal schedule
+                    STATE["retry_after"] = None
+                    logging.info(
+                        f"plex unreachable for {fails} attempts — giving up quick "
+                        f"retries; next attempt at scheduled scan time"
+                    )
+
+            # Only notify on the FIRST connection failure to avoid notification
+            # spam during extended outages. Always notify on other error types.
+            should_notify_failure = not is_connection_error or STATE.get("consecutive_failures", 0) == 1
+            if should_notify_failure:
+                if opts.get("notify_on_error") and opts.get("notify_service"):
+                    await send_notification(
+                        opts["notify_service"],
+                        "Plex Library Index — scan failed",
+                        f"Error: {e}",
+                    )
+                if opts.get("telegram_enabled") and opts.get("telegram_notify_on_error"):
+                    await _telegram_broadcast(f"⚠️ Plex Library Index — scan failed\n\nError: {e}")
+            else:
+                logging.debug(f"skipping notification for repeated connection failure #{STATE.get('consecutive_failures')}")
         finally:
             STATE["scanning"] = False
             save_state()
 
 
+def _is_connection_error(exc):
+    """Detect errors caused by Plex server being unreachable, vs other errors."""
+    err_str = str(exc).lower()
+    indicators = [
+        "host is unreachable",
+        "connection refused",
+        "connection error",
+        "name or service not known",
+        "no route to host",
+        "timed out",
+        "max retries exceeded",
+        "failed to establish",
+    ]
+    return any(s in err_str for s in indicators)
+
+
+def _parse_hhmm(s):
+    """Parse 'HH:MM' into (hour, minute) tuple, or None on bad input."""
+    if not s or not isinstance(s, str):
+        return None
+    s = s.strip()
+    if not s:
+        return None
+    try:
+        h_str, m_str = s.split(":", 1)
+        h, m = int(h_str), int(m_str)
+        if 0 <= h < 24 and 0 <= m < 60:
+            return (h, m)
+    except (ValueError, AttributeError):
+        pass
+    return None
+
+
+def _next_scheduled_run(opts, now=None):
+    """Compute the next scheduled scan time as a unix timestamp.
+
+    Uses scan_time and scan_time_2 (HH:MM strings, local time) when set;
+    falls back to interval_hours-from-now if both are empty.
+
+    Returns (timestamp, reason_string).
+    """
+    if now is None:
+        now = datetime.now().astimezone()  # local timezone
+
+    times = []
+    for key in ("scan_time", "scan_time_2"):
+        t = _parse_hhmm(opts.get(key))
+        if t:
+            times.append(t)
+
+    if not times:
+        interval = max(1, int(opts.get("interval_hours", 24))) * 3600
+        return (now.timestamp() + interval, f"every {opts.get('interval_hours', 24)}h")
+
+    # Build candidate datetimes: today's HH:MM and tomorrow's HH:MM for each
+    # configured time, pick the earliest one that's still in the future.
+    candidates = []
+    for h, m in times:
+        for day_offset in (0, 1):
+            d = now.replace(hour=h, minute=m, second=0, microsecond=0)
+            from datetime import timedelta
+            d = d + timedelta(days=day_offset)
+            if d > now:
+                candidates.append((d, h, m))
+    if not candidates:
+        # Shouldn't happen given the day_offset=1 fallback, but be safe
+        return (now.timestamp() + 3600, "fallback (1h)")
+
+    candidates.sort(key=lambda x: x[0])
+    chosen, h, m = candidates[0]
+    return (chosen.timestamp(), f"daily at {h:02d}:{m:02d}")
+
+
 async def scheduled_loop():
-    """Sleep then scan, repeatedly. Always re-reads options to pick up changes."""
-    backoff = 60
+    """Sleep until the next scheduled scan time, then scan. Repeat.
+
+    Two scheduling modes:
+    - Time-of-day (preferred): if scan_time / scan_time_2 are set, sleeps
+      until the next one comes around. Predictable, runs at the same wall
+      clock time every day.
+    - Interval fallback: if both scan times are blank, sleeps interval_hours
+      from now between scans.
+
+    Connection-failure quick retry (STATE['retry_after']) can shorten the
+    next wake-up, but only fires twice — after that, retry_after is cleared
+    and we wait for the normal schedule.
+    """
     while True:
         opts = load_options()
-        interval = max(1, int(opts.get("interval_hours", 24))) * 3600
-        STATE["next_scan_after"] = (
-            datetime.now(timezone.utc).timestamp() + interval
-        )
+        now = datetime.now(timezone.utc).timestamp()
+        next_normal, reason = _next_scheduled_run(opts)
+
+        # Quick-retry override: if a retry is scheduled and it's sooner
+        # than the next normal scan, honor it.
+        retry_after = STATE.get("retry_after")
+        next_wake = next_normal
+        wake_reason = reason
+        if retry_after and retry_after < next_normal:
+            next_wake = retry_after
+            wake_reason = "quick retry"
+
+        STATE["next_scan_after"] = next_wake
         save_state()
-        await asyncio.sleep(interval)
+
+        sleep_for = max(1, next_wake - now)
+        logging.info(
+            f"next scan at {datetime.fromtimestamp(next_wake).astimezone().isoformat(timespec='seconds')} "
+            f"({wake_reason}, in {int(sleep_for)}s)"
+        )
+
+        await asyncio.sleep(sleep_for)
         try:
             await run_scan()
-            backoff = 60
         except Exception:
             logging.exception("scheduled scan errored")
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, 1800)
 
 
 # --- HTTP handlers ---

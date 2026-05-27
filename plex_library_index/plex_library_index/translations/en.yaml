@@ -1,0 +1,78 @@
+configuration:
+  # ─── Plex connection ─────────────────────────────────────────
+  plex_url:
+    name: "Plex server URL"
+    description: "URL to your Plex Media Server. Example: http://192.168.1.50:32400"
+
+  plex_token:
+    name: "Plex authentication token"
+    description: "X-Plex-Token. Find yours at https://support.plex.tv/articles/204059436"
+
+  # ─── Scanning ────────────────────────────────────────────────
+  scan_time:
+    name: "Scan time (primary)"
+    description: "Time of day to run the daily scan, in 24-hour HH:MM format (e.g. 03:30). Leave blank to fall back to interval_hours instead."
+
+  scan_time_2:
+    name: "Scan time (secondary, optional)"
+    description: "Optional second scan time per day, same format (e.g. 15:00). Leave blank for once-daily."
+
+  interval_hours:
+    name: "Scan interval (hours) — fallback"
+    description: "Only used when both scan times are blank. Triggers a scan every N hours from add-on startup."
+
+  parallel_jobs:
+    name: "Parallel scan workers"
+    description: "Number of concurrent show metadata fetches. 4–8 is the sweet spot on a Pi 4."
+
+  gzip_output:
+    name: "Gzip compress output"
+    description: "Compress library.json (~91% smaller). Browser decodes automatically. Leave on unless debugging."
+
+  log_level:
+    name: "Log level"
+    description: "Verbosity of the add-on log. Use 'debug' to troubleshoot, 'info' for normal operation."
+
+  # ─── Home Assistant notifications ────────────────────────────
+  notify_service:
+    name: "HA notify service"
+    description: "Name of a Home Assistant notify.* service (e.g. mobile_app_pixel_8). Leave blank to disable HA notifications. See the Preferences tab in the UI for the full list of available services."
+
+  notify_on_success:
+    name: "HA notify on success"
+    description: "Send a notification through HA after each successful scan."
+
+  notify_on_error:
+    name: "HA notify on error"
+    description: "Send a notification through HA when a scan fails. (Connection errors only notify on the first failure of each outage to prevent spam.)"
+
+  notify_only_on_changes:
+    name: "HA notify only on changes"
+    description: "Only send success notifications when content counts differ from the previous scan."
+
+  # ─── Telegram bot ────────────────────────────────────────────
+  telegram_enabled:
+    name: "Enable Telegram bot"
+    description: "Master switch for the built-in Telegram integration. Set up bot token + allowed chat IDs below."
+
+  telegram_bot_token:
+    name: "Telegram bot token"
+    description: "Token from @BotFather. Message @BotFather on Telegram and run /newbot to create one."
+
+  telegram_allowed_chat_ids:
+    name: "Allowed Telegram chat IDs"
+    description: "Numeric chat IDs allowed to use the bot. Anyone else is silently ignored. Find your ID by messaging @userinfobot."
+
+  telegram_notify_on_success:
+    name: "Telegram notify on success"
+    description: "Send a Telegram message after each successful scan."
+
+  telegram_notify_on_error:
+    name: "Telegram notify on error"
+    description: "Send a Telegram message when a scan fails."
+
+  telegram_answer_commands:
+    name: "Telegram answer commands"
+    description: "Whether the bot responds to /search, /random, /status, and free-text queries. Turn off to use the bot for notifications only."
+
+network: {}

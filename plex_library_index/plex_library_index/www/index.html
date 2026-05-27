@@ -321,6 +321,17 @@
         <label for="pref-auto-refresh">Trigger a scan when the page opens</label>
         <input type="checkbox" id="pref-auto-refresh" />
         <div class="hint">Off by default. Useful if you mostly visit the page after adding content.</div>
+
+        <label for="pref-browser-success">Browser notify on success</label>
+        <input type="checkbox" id="pref-browser-success" />
+        <div class="hint">Show a desktop/browser notification when a scan completes successfully. Requires permission (you'll be prompted).</div>
+
+        <label for="pref-browser-error">Browser notify on error</label>
+        <input type="checkbox" id="pref-browser-error" />
+        <div class="hint">Show a desktop/browser notification when a scan fails.</div>
+
+        <label>Browser notification permission</label>
+        <div class="ro" id="browser-perm-status">checking…</div>
       </div>
       <div class="prefs-actions">
         <button id="prefs-save">save preferences</button>
@@ -765,10 +776,13 @@ async function triggerRefresh() {
 }
 
 let lastScanTimestamp = null;
+let lastErrorSeen = null;
 async function pollStatus() {
   const status = await fetchStatus();
   updateMeta(DATA, status);
   if (!status) return;
+
+  // Detect scan completion
   if (status.last_scan && status.last_scan !== lastScanTimestamp) {
     if (lastScanTimestamp !== null) {
       const fresh = await fetchLibrary();
@@ -776,9 +790,31 @@ async function pollStatus() {
         loadData(fresh);
         toast("library updated", "success");
       }
+      // Fire browser notification on success if enabled
+      if (PREFS?.browser_notify_on_success && !status.last_error) {
+        const c = status.counts || {};
+        fireBrowserNotification(
+          "Plex Library Index — scan complete",
+          `${c.movies || 0} movies, ${c.shows || 0} shows, ${c.seasons || 0} seasons`
+        );
+      }
     }
     lastScanTimestamp = status.last_scan;
   }
+
+  // Detect new error (only fire once per distinct error)
+  if (status.last_error && status.last_error !== lastErrorSeen) {
+    if (PREFS?.browser_notify_on_error && lastErrorSeen !== null) {
+      fireBrowserNotification(
+        "Plex Library Index — scan failed",
+        status.last_error.substring(0, 200)
+      );
+    }
+    lastErrorSeen = status.last_error;
+  } else if (!status.last_error) {
+    lastErrorSeen = null;
+  }
+
   $("about-version").textContent = status.version || "—";
   $("about-last-scan").textContent = status.last_scan ? new Date(status.last_scan).toLocaleString() : "—";
   $("about-duration").textContent = status.last_duration_s ? status.last_duration_s + " s" : "—";
@@ -800,6 +836,50 @@ function applyPrefsToForm() {
   $("pref-uhd-default").checked = !!PREFS.show_4k_only_default;
   $("pref-recent-default").checked = !!PREFS.show_recent_default;
   $("pref-auto-refresh").checked = !!PREFS.auto_refresh_on_open;
+  $("pref-browser-success").checked = !!PREFS.browser_notify_on_success;
+  $("pref-browser-error").checked = !!PREFS.browser_notify_on_error;
+  updateBrowserPermStatus();
+}
+
+function updateBrowserPermStatus() {
+  const el = $("browser-perm-status");
+  if (!el) return;
+  if (!("Notification" in window)) {
+    el.innerHTML = '<span class="bad-check">✗ this browser does not support notifications</span>';
+    return;
+  }
+  const p = Notification.permission;
+  if (p === "granted") {
+    el.innerHTML = '<span class="ok-check">✓ granted</span>';
+  } else if (p === "denied") {
+    el.innerHTML = '<span class="bad-check">✗ denied — change in browser site settings</span>';
+  } else {
+    el.innerHTML = '<button id="grant-perm-btn" style="font-size:11px;padding:4px 10px;">grant permission</button>';
+    setTimeout(() => {
+      const btn = document.getElementById("grant-perm-btn");
+      if (btn) btn.addEventListener("click", async () => {
+        await Notification.requestPermission();
+        updateBrowserPermStatus();
+      });
+    }, 0);
+  }
+}
+
+function fireBrowserNotification(title, body) {
+  if (!("Notification" in window)) return;
+  if (Notification.permission !== "granted") return;
+  try {
+    const n = new Notification(title, {
+      body: body,
+      icon: "favicon.ico",
+      tag: "plex-library-index",
+      renotify: true,
+    });
+    n.onclick = () => { window.focus(); n.close(); };
+    setTimeout(() => n.close(), 8000);
+  } catch (e) {
+    console.warn("browser notification failed:", e);
+  }
 }
 
 async function savePrefs() {
@@ -812,6 +892,8 @@ async function savePrefs() {
     show_4k_only_default: $("pref-uhd-default").checked,
     show_recent_default: $("pref-recent-default").checked,
     auto_refresh_on_open: $("pref-auto-refresh").checked,
+    browser_notify_on_success: $("pref-browser-success").checked,
+    browser_notify_on_error: $("pref-browser-error").checked,
   };
   try {
     const r = await fetch("api/preferences", {
@@ -843,6 +925,8 @@ async function resetPrefs() {
     show_4k_only_default: false,
     show_recent_default: false,
     auto_refresh_on_open: false,
+    browser_notify_on_success: false,
+    browser_notify_on_error: true,
   };
   try {
     const r = await fetch("api/preferences", {
@@ -911,7 +995,7 @@ async function populateServerSummary() {
   `;
 }
 
-async def testNotify() {
+async function testNotify() {
   const btn = $("test-notify-btn");
   btn.disabled = true;
   try {
@@ -1006,6 +1090,7 @@ setupObserver();
     batch_size: BATCH_DEFAULT, hide_watched_default: false,
     show_4k_only_default: false, show_recent_default: false,
     auto_refresh_on_open: false,
+    browser_notify_on_success: false, browser_notify_on_error: true,
   };
   applyPrefsToForm();
   applyDefaultsFromPrefs();

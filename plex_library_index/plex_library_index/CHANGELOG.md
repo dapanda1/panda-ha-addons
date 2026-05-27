@@ -1,5 +1,57 @@
 # Changelog
 
+## 1.3.2 — 2026-05-27
+
+### Changed — scheduling
+- **Time-of-day scheduling.** Replaced "every N hours from startup" with explicit clock times. New options:
+  - `scan_time` (default `"03:30"`) — when to run the daily scan, 24-hour HH:MM format
+  - `scan_time_2` (optional) — second scan time per day
+  - `interval_hours` is now a fallback used only when both `scan_time` and `scan_time_2` are blank
+- **Capped quick-retry attempts.** When Plex is unreachable, the add-on now tries twice (after 5 min, then after 10 min) and then gives up until the next scheduled scan. Better fit for setups where the Plex server is offline most of the time — avoids retry loops chewing log space.
+- Log line on startup announces the next scan time clearly, e.g.: `next scan at 2026-05-27T03:30:00-07:00 (daily at 03:30, in 32400s)`.
+
+### Clarified
+- **Icons.** Replaced placeholder `images/` folder with `ICONS.md` at the add-on root. Home Assistant looks for `icon.png` and `logo.png` directly in the add-on directory (next to `config.yaml`), not in an `images/` subfolder. Drop those two files alongside `config.yaml` if you want custom artwork; HA picks them up automatically. The add-on currently ships without artwork, so HA uses its generic placeholder.
+
+### Internal
+- Schema version bumped to v4; v3→v4 migration backfills `scan_time = "03:30"`, `scan_time_2 = ""`.
+
+## 1.3.1 — 2026-05-27
+
+### Changed
+- Simplified Plex-unreachable retry schedule. Now retries first at 5 minutes, then every 10 minutes thereafter (was exponential backoff topping out at 60 min). Better fit for setups where the Plex server is typically offline and comes online intermittently.
+
+## 1.3.0 — 2026-05-27
+
+### Fixed
+- **Preferences page button did nothing.** Cause: a Python-syntax `async def testNotify()` left in the JavaScript broke the inline script's parsing. Now correctly written as `async function`.
+- **`VERSION` constant in `server.py` was stuck at 1.2.0.** Now tracks the package version.
+
+### Added — resilience to Plex being offline
+- **Quick-retry mode for connection failures.** When a scan fails because Plex is unreachable (host unreachable, connection refused, timeout, etc.), the add-on now retries on an exponential backoff (1 min → 2 → 5 → 10 → 15 → 30 → 60 min) until Plex comes back. Once Plex is reachable again, the schedule reverts to the normal `interval_hours`.
+- **No notification spam during outages.** Connection-failure notifications fire only on the first failure of an outage, not every retry attempt. Other error types (auth failure, bad config) still notify normally.
+- **New `/api/status` fields**: `retry_after`, `consecutive_failures`.
+
+### Added — browser notifications
+- New display preferences: "Browser notify on success" / "Browser notify on error".
+- Uses the standard Web Notifications API — works on desktop browsers (Chrome, Firefox, Safari, Edge) and some mobile browsers. A permission-request button appears in Preferences the first time. Clicking a notification focuses the browser tab.
+- Independent of HA notifications and Telegram — you can use one, two, or all three notification channels.
+
+### Improved — configuration clarity
+- Added `translations/en.yaml` with human-readable field labels and descriptions grouped by purpose: Plex connection, Scanning, Home Assistant notifications, Telegram bot. HA's add-on UI now shows full descriptive labels instead of raw field names.
+
+## 1.2.9 — 2026-05-26
+
+### Fixed (metadata)
+- Replaced placeholder `noah` / `<your-username>` references throughout repository metadata with the actual repository owner (`dapanda1`) and repo (`panda-ha-addons`). Affected:
+  - `plex_library_index/config.yaml` — `url` field
+  - `plex_library_index/Dockerfile` — `org.opencontainers.image.source` label
+  - `repository.yaml` — `url` and `maintainer` fields
+  - `README.md` — install instructions
+  - `plex_library_index/README.md` — install instructions
+  - `LICENSE` — copyright holder
+- No code or runtime behavior changes.
+
 ## 1.2.8 — 2026-05-26
 
 ### Critical fix — this is the real root cause

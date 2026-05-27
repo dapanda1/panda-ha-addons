@@ -16,7 +16,7 @@ In Home Assistant: **Settings → Add-ons → Add-on Store → ⋮ → Repositor
 then add:
 
 ```
-https://github.com/<your-username>/<this-repo>
+https://github.com/dapanda1/panda-ha-addons
 ```
 
 The add-ons listed above will appear in the store under this repository's
