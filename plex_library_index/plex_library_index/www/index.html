@@ -961,13 +961,28 @@ async function populateServerSummary() {
   `;
 
   const svcInfo = await fetchNotifyServices();
-  const cleanedService = (cfg.notify_service || "").replace(/^notify\./,"");
-  const svcExists = cleanedService && svcInfo?.services?.includes(cleanedService);
+  // Parse comma-separated list, normalize prefix
+  const configuredServices = (cfg.notify_service || "")
+    .split(",")
+    .map(s => s.trim().replace(/^notify\./, ""))
+    .filter(Boolean);
+
+  let serviceHtml;
+  if (!configuredServices.length) {
+    serviceHtml = '<span>none — set notify_service in add-on config to enable notifications</span>';
+  } else {
+    serviceHtml = configuredServices.map(s => {
+      const found = svcInfo?.services?.includes(s);
+      const mark = found
+        ? '<span class="ok-check">✓</span>'
+        : '<span class="bad-check">✗ not found</span>';
+      return `<code>notify.${esc(s)}</code> ${mark}`;
+    }).join("<br>");
+  }
+
   $("notify-summary").innerHTML = `
-    <label>Notify service</label>
-    <div class="ro">${cleanedService
-      ? `<code>notify.${esc(cleanedService)}</code> ${svcExists ? '<span class="ok-check">✓ found</span>' : '<span class="bad-check">✗ not found on this HA instance</span>'}`
-      : '<span>none — set notify_service in add-on config to enable notifications</span>'}</div>
+    <label>Notify service(s)</label>
+    <div class="ro">${serviceHtml}</div>
     <label>Notify on success</label><div class="ro">${cfg.notify_on_success ? "enabled" : "disabled"}</div>
     <label>Notify on error</label><div class="ro">${cfg.notify_on_error ? "enabled" : "disabled"}</div>
     <label>Notify only on changes</label><div class="ro">${cfg.notify_only_on_changes ? "enabled" : "disabled"}</div>

@@ -29,7 +29,7 @@ from aiohttp import web
 import exporter
 import telegram_bot
 
-VERSION = "1.3.2"
+VERSION = "1.3.3"
 
 OPTIONS_PATH = Path("/data/options.json")
 WWW_DIR = Path("/data/www")
@@ -232,22 +232,40 @@ async def list_notify_services():
     return sorted(services)
 
 
-async def send_notification(service: str, title: str, message: str):
-    """Fire a notify.<service> call. Returns True on success."""
+async def send_notification(service, title: str, message: str):
+    """Fire one or more notify.<service> calls.
+
+    `service` may be a single service name (e.g. "mobile_app_pixel_8") or
+    a comma-separated list (e.g. "mobile_app_pixel_8, persistent_notification").
+    Each service in the list is called independently — failures on one don't
+    block others. Returns True if at least one succeeded.
+    """
     if not service:
         return False
-    # Strip optional "notify." prefix if user typed it
-    if service.startswith("notify."):
-        service = service[len("notify."):]
+    # Accept comma- or whitespace-separated lists. Strip optional notify. prefix.
+    raw_parts = [p.strip() for p in service.replace(";", ",").split(",")]
+    services = []
+    for p in raw_parts:
+        if not p:
+            continue
+        if p.startswith("notify."):
+            p = p[len("notify."):]
+        services.append(p)
+    if not services:
+        return False
+
     payload = {"title": title, "message": message}
-    status, body = await _ha_api_call(
-        "POST", f"/services/notify/{service}", payload=payload
-    )
-    if status and 200 <= status < 300:
-        logging.info(f"notification sent via notify.{service}")
-        return True
-    logging.warning(f"notify.{service} failed: status={status} body={body}")
-    return False
+    any_ok = False
+    for svc in services:
+        status, body = await _ha_api_call(
+            "POST", f"/services/notify/{svc}", payload=payload
+        )
+        if status and 200 <= status < 300:
+            logging.info(f"notification sent via notify.{svc}")
+            any_ok = True
+        else:
+            logging.warning(f"notify.{svc} failed: status={status} body={body}")
+    return any_ok
 
 
 def _format_summary(counts, duration_s):

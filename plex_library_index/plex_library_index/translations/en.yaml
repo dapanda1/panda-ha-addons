@@ -35,8 +35,8 @@ configuration:
 
   # ─── Home Assistant notifications ────────────────────────────
   notify_service:
-    name: "HA notify service"
-    description: "Name of a Home Assistant notify.* service (e.g. mobile_app_pixel_8). Leave blank to disable HA notifications. See the Preferences tab in the UI for the full list of available services."
+    name: "HA notify service(s)"
+    description: "One or more Home Assistant notify.* services, comma-separated (e.g. 'mobile_app_pixel_8, persistent_notification'). Leave blank to disable HA notifications. The Preferences tab in the UI lists every available notify.* service on this HA instance."
 
   notify_on_success:
     name: "HA notify on success"

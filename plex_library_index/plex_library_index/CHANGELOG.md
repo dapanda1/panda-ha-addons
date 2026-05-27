@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.3 — 2026-05-27
+
+### Fixed
+- **`notify_service` now accepts multiple comma-separated services.** Previously, putting `"mobile_app_pixel_10_pro, persistent_notification"` in the field caused a 400 error because the whole string was being sent as a single (invalid) service name. The add-on now splits on commas and calls each service independently — a failure in one doesn't block the others.
+- Also accepts semicolons as separators, and tolerates spaces around them.
+
+### Improved
+- The Preferences page in the UI now shows each configured notify service on its own line with an individual ✓/✗ check against the HA services list, so it's clear at a glance which entries in the list are valid.
+- Configuration field renamed to "HA notify service(s)" with a description showing the comma-separated format.
+
 ## 1.3.2 — 2026-05-27
 
 ### Changed — scheduling
