@@ -13,7 +13,7 @@ import sys
 import urllib.error
 import urllib.request
 
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 6
 SCHEMA_FILE = "/data/.schema_version"
 OPTIONS_FILE = "/data/options.json"
 SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN", "")
@@ -118,11 +118,25 @@ def migrate_v3_to_v4(opts: dict) -> dict:
     return opts
 
 
+def migrate_v4_to_v5(opts: dict) -> dict:
+    """Add include_episodes option (default off — costs extra scan time)."""
+    opts.setdefault("include_episodes", False)
+    return opts
+
+
+def migrate_v5_to_v6(opts: dict) -> dict:
+    """Add include_episode_numbers (default on — enables gap detection)."""
+    opts.setdefault("include_episode_numbers", True)
+    return opts
+
+
 MIGRATIONS = [
     (1, migrate_v0_to_v1),
     (2, migrate_v1_to_v2),
     (3, migrate_v2_to_v3),
     (4, migrate_v3_to_v4),
+    (5, migrate_v4_to_v5),
+    (6, migrate_v5_to_v6),
 ]
 
 

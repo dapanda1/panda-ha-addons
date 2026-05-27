@@ -1,5 +1,61 @@
 # Changelog
 
+## 1.4.1 — 2026-05-27
+
+### Added — missing-episode detection
+- **New `include_episode_numbers` option (default `on`).** Lightweight scan that captures only the episode numbers present in each season (no titles, no files, no metadata). Used to compute which episodes are missing within each season.
+- **Per-season missing list.** Each season object now has `episode_numbers` (sorted ints) and `missing_episodes` (gaps between the lowest and highest present). E.g. if S03 has E01, E02, E04, E06, then `missing_episodes: [3, 5]`.
+- **Per-show total.** New `missing_episode_count` field on each show.
+- **Library-wide totals** in the payload's `counts`: `missing_episodes` and `shows_with_gaps`.
+
+### UI
+- Shows with gaps display a red `⚠ N missing` badge next to the title.
+- Season chips for incomplete seasons turn red and show the missing list directly, e.g. `S03 · 22 ep · missing E04, E11`.
+- New quick filter chip **"missing episodes"** filters to only shows with at least one gap.
+- Stats row in the header surfaces total missing episodes when any are found.
+
+### Compared to `include_episodes`
+- `include_episode_numbers` (new, default on): cheap. Captures episode numbers only. Enables gap detection. Same API cost as include_episodes but ~1% of the JSON size.
+- `include_episodes` (default off): full per-episode metadata, file paths, sizes, watched state, versions. Enables the expandable episode list UI. Use when you want individual-episode visibility.
+
+### Internal
+- Schema version bumped to v6; v5→v6 migration backfills `include_episode_numbers: true`.
+
+## 1.4.0 — 2026-05-27
+
+### Added — multi-version (duplicate file) support
+- **Captures every media version per movie/episode**, not just the first. Before this release, if you had multiple copies of *Tron* in different qualities (4K + 1080p), the exporter only recorded one of them. Now both are captured in a `versions` array on the item.
+- New `versions` array per movie/episode with per-copy detail: resolution, video/audio codec, container, file size, bitrate, duration.
+- Top-level item fields (`resolution`, `video_codec`, `file_size_bytes`) now show the **best** version (highest resolution); the file size is the **sum** across all versions.
+- New `version_count` field on each item.
+- **UI badge** `×N` next to the title when multiple versions exist. Item details show a "Versions:" block listing each copy with its resolution/codec/container/size.
+- New `counts.movie_versions` total in the payload.
+
+### Added — episode visibility (optional)
+- New config option `include_episodes` (default `false`). When enabled, every TV episode is exported with its own metadata: season number, episode number, title, duration, file size, resolution, watched state, version count.
+- **UI**: shows expand to reveal an "▸ N episodes" button that lazy-renders an episode list grouped by season. Each episode line shows watched checkmark, episode number, title, resolution, version count, duration, and file size.
+- **Search now matches episode titles** when episodes are indexed (e.g. searching `pilot` will find every show whose pilot episode is titled "Pilot").
+- Episode data adds 1-3 minutes to scan time on libraries with 800+ shows and roughly triples the output file size. Left off by default — turn it on in Configuration only when you want it.
+- New `features.episodes_indexed` and `counts.episodes_indexed` fields in the payload.
+
+### Where quality is pulled from
+- Resolution is bucketed from the actual video file's pixel height (read from Plex's API), not from Plex's `videoResolution` label. So 4K is "this video file is ≥2000px tall" — accurate against the real file regardless of how Plex tagged it.
+
+### Internal
+- Schema version bumped to v5; v4→v5 migration backfills `include_episodes: false`.
+
+## 1.3.5 — 2026-05-27
+
+### Cleaned
+- Removed remaining placeholder name references from the root `README.md` and a CHANGELOG entry. No code or runtime behavior changes.
+
+## 1.3.4 — 2026-05-27
+
+### Improved — scan progress visibility
+- **Logs progress every 50 items in both movie and show scans.** Previously movies scanned silently between "scanning movie library: Movies" and the eventual completion — no way to tell if the scan was stuck or just working through a large library.
+- **UI shows live progress** in the header while scanning, e.g. `scanning movies (1247/2200 from Movies)` or `scanning shows (45/800)`. Updates every 2 seconds while scanning, drops back to every 5 seconds when idle.
+- New `progress` field in `/api/status` returns the current phase: `connecting` / `connected` / `movies` / `shows` / `writing`, with item counts.
+
 ## 1.3.3 — 2026-05-27
 
 ### Fixed
@@ -53,7 +109,7 @@
 ## 1.2.9 — 2026-05-26
 
 ### Fixed (metadata)
-- Replaced placeholder `noah` / `<your-username>` references throughout repository metadata with the actual repository owner (`dapanda1`) and repo (`panda-ha-addons`). Affected:
+- Replaced placeholder references throughout repository metadata with the actual repository owner (`dapanda1`) and repo (`panda-ha-addons`). Affected:
   - `plex_library_index/config.yaml` — `url` field
   - `plex_library_index/Dockerfile` — `org.opencontainers.image.source` label
   - `repository.yaml` — `url` and `maintainer` fields

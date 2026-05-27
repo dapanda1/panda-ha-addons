@@ -25,6 +25,14 @@ configuration:
     name: "Parallel scan workers"
     description: "Number of concurrent show metadata fetches. 4–8 is the sweet spot on a Pi 4."
 
+  include_episode_numbers:
+    name: "Detect missing episodes"
+    description: "When on, scans each show's episode list to find gaps (e.g. season has E01, E02, E04 but is missing E03). Lightweight — only the episode numbers are captured, not titles or files. Adds 1-3 minutes to scan time on large libraries. Required for the 'missing episodes' indicator in the UI."
+
+  include_episodes:
+    name: "Include full episode detail"
+    description: "When enabled, every TV episode is exported with its own metadata (file path, file size, resolution, watched state, etc.). Adds 1–3 minutes to scan time on libraries with 800+ shows and roughly triples the output file size. Leave off if you only need season-level info."
+
   gzip_output:
     name: "Gzip compress output"
     description: "Compress library.json (~91% smaller). Browser decodes automatically. Leave on unless debugging."

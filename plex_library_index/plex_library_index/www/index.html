@@ -152,6 +152,79 @@
   .badge.hd { color: var(--hd); }
   .badge.sd { color: var(--sd); }
   .badge.watched { color: var(--accent-dim); }
+  .badge.versions { color: var(--show); }
+  .badge.gaps { color: var(--uhd); border-color: var(--uhd); }
+  .season-chip.gaps { border-color: var(--uhd); color: var(--uhd); }
+  .versions-list { margin-top: 8px; font-size: 11px; }
+  .versions-list strong { color: var(--ink); }
+  .version-chip {
+    display: inline-block;
+    margin: 4px 4px 0 0;
+    padding: 3px 8px;
+    border: 1px solid var(--show);
+    color: var(--ink);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+  }
+  .episodes-wrapper { margin-top: 8px; }
+  .episodes-toggle {
+    background: transparent;
+    border: 1px solid var(--rule);
+    color: var(--ink-dim);
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 4px 10px;
+    cursor: pointer;
+    letter-spacing: 0.05em;
+  }
+  .episodes-toggle:hover { border-color: var(--accent-dim); color: var(--ink); }
+  .episodes-list {
+    margin-top: 6px;
+    padding: 8px 10px;
+    background: rgba(255,255,255,0.015);
+    border-left: 2px solid var(--accent-dim);
+    font-size: 11px;
+  }
+  .ep-season { margin-bottom: 10px; }
+  .ep-season:last-child { margin-bottom: 0; }
+  .ep-season-h {
+    font-family: var(--serif);
+    font-weight: 600;
+    color: var(--accent);
+    font-size: 12px;
+    margin-bottom: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  .ep-row {
+    display: grid;
+    grid-template-columns: 18px 36px 1fr auto auto auto;
+    gap: 8px;
+    padding: 2px 0;
+    color: var(--ink-dim);
+    align-items: baseline;
+  }
+  .ep-row .ep-watched { color: var(--accent); }
+  .ep-row .ep-unwatched { color: var(--rule); }
+  .ep-row .ep-num {
+    font-variant-numeric: tabular-nums;
+    color: var(--ink);
+    font-weight: 500;
+  }
+  .ep-row .ep-title { color: var(--ink); }
+  .ep-row .ep-res {
+    font-size: 9px;
+    padding: 0 4px;
+    border: 1px solid var(--ink-dim);
+    color: var(--ink-dim);
+  }
+  .ep-row .ep-versions {
+    font-size: 9px;
+    padding: 0 4px;
+    border: 1px solid var(--show);
+    color: var(--show);
+  }
+  .ep-row .ep-meta { font-variant-numeric: tabular-nums; }
   .num { font-variant-numeric: tabular-nums; color: var(--ink-dim); text-align: right; font-size: 11px; line-height: 1.4; }
   .num strong { color: var(--ink); font-weight: 500; }
   .detail { color: var(--ink-dim); font-size: 11px; line-height: 1.5; }
@@ -237,6 +310,7 @@
       <button class="chip" data-quick="recent">recently added (30d)</button>
       <button class="chip" data-quick="unwatched">unwatched only</button>
       <button class="chip" data-quick="uhd">4K only</button>
+      <button class="chip" data-quick="gaps">missing episodes</button>
       <button class="chip" id="random-btn">🎲 random pick</button>
       <button class="chip" id="stats-btn">📊 stats</button>
       <button class="chip" id="dupes-btn">duplicates</button>
@@ -265,6 +339,7 @@
       <span><strong id="s-shows">0</strong>shows</span>
       <span><strong id="s-seasons">0</strong>seasons</span>
       <span><strong id="s-episodes">0</strong>episodes</span>
+      <span id="s-missing-wrap" hidden><strong id="s-missing" style="color: var(--uhd);">0</strong>missing ep</span>
       <span><strong id="s-size">0</strong>GB total</span>
     </div>
 
@@ -391,7 +466,7 @@
 const BATCH_DEFAULT = 50;
 let BATCH = BATCH_DEFAULT;
 let DATA = null, ITEMS = [], FILTERED = [], RENDERED = 0;
-let QUICK = { recent: false, unwatched: false, uhd: false };
+let QUICK = { recent: false, unwatched: false, uhd: false, gaps: false };
 let OBSERVER = null, DEBOUNCE = null, STATUS_TIMER = null;
 let PREFS = null;
 
@@ -436,6 +511,7 @@ function toast(msg, kind) {
 }
 
 function buildSearchBlob(item) {
+  const epTitles = (item.episodes || []).map(e => e.title || "").join(" ");
   return [
     item.title, item.original_title, item.studio, item.library,
     (item.genres || []).join(" "),
@@ -443,6 +519,7 @@ function buildSearchBlob(item) {
     item.year ? String(item.year) : "",
     item.resolution || "",
     item.content_rating || "",
+    epTitles,
   ].join(" ").toLowerCase();
 }
 const isUnwatched = (i) => i.type === "movie" ? !i.view_count : (i.viewed_count || 0) < (i.episode_count || 0);
@@ -494,7 +571,30 @@ function updateMeta(d, status) {
   if (d?.server?.version) parts.push(`plex ${esc(d.server.version)}`);
   let html = parts.join(" · ");
   if (status?.scanning) {
-    html += `<br><span class="pulse"></span>scanning…`;
+    let progressLine = "scanning…";
+    const p = status.progress;
+    if (p) {
+      if (p.phase === "connecting") {
+        progressLine = "connecting to Plex…";
+      } else if (p.phase === "connected") {
+        progressLine = "connected — preparing scan…";
+      } else if (p.phase === "movies") {
+        if (p.total) {
+          progressLine = `scanning movies (${p.done}/${p.total} from ${esc(p.library || '')})`;
+        } else {
+          progressLine = `scanning movies in ${esc(p.library || '')}…`;
+        }
+      } else if (p.phase === "shows") {
+        if (p.total) {
+          progressLine = `scanning shows (${p.done}/${p.total})`;
+        } else {
+          progressLine = "scanning shows…";
+        }
+      } else if (p.phase === "writing") {
+        progressLine = "writing library file…";
+      }
+    }
+    html += `<br><span class="pulse"></span>${progressLine}`;
   } else if (status?.last_scan) {
     html += `<br>scanned ${fmtRelative(status.last_scan)}`;
     if (status.last_duration_s) html += ` (${status.last_duration_s}s)`;
@@ -544,6 +644,12 @@ function loadData(d) {
   $("s-shows").textContent = c.shows ?? 0;
   $("s-seasons").textContent = c.seasons ?? 0;
   $("s-episodes").textContent = c.episodes ?? 0;
+  if (c.missing_episodes && c.missing_episodes > 0) {
+    $("s-missing").textContent = c.missing_episodes;
+    $("s-missing-wrap").hidden = false;
+  } else {
+    $("s-missing-wrap").hidden = true;
+  }
   const totalBytes = ITEMS.reduce((a,i) => a + (i.file_size_bytes || 0), 0);
   $("s-size").textContent = (totalBytes/1e9).toFixed(0);
   $("stats").hidden = false;
@@ -567,7 +673,13 @@ function rowHtml(item, q) {
     : (item.resolution === "1080p" || item.resolution === "720p") ? `<span class="badge hd">${item.resolution}</span>`
     : item.resolution === "SD" ? '<span class="badge sd">SD</span>' : "";
   const watchedBadge = !isUnwatched(item) && (item.view_count || item.viewed_count) ? '<span class="badge watched">✓</span>' : "";
-  const title = `<div class="title-cell">${highlight(item.title || "", q)}<span class="yr">${item.year || ""}</span><span class="badges">${resBadge}${watchedBadge}</span></div>`;
+  const versionCount = item.version_count || (item.versions?.length || 0);
+  const versionsBadge = versionCount > 1
+    ? `<span class="badge versions">×${versionCount}</span>` : "";
+  const missingCount = item.missing_episode_count || 0;
+  const gapsBadge = missingCount > 0
+    ? `<span class="badge gaps" title="${missingCount} missing episodes">⚠ ${missingCount} missing</span>` : "";
+  const title = `<div class="title-cell">${highlight(item.title || "", q)}<span class="yr">${item.year || ""}</span><span class="badges">${resBadge}${watchedBadge}${versionsBadge}${gapsBadge}</span></div>`;
 
   const ids = item.external_ids || {};
   const links = [];
@@ -576,6 +688,34 @@ function rowHtml(item, q) {
   if (ids.imdb) links.push(`<a href="https://www.imdb.com/title/${ids.imdb}/" target="_blank" rel="noopener">imdb</a>`);
   if (ids.tmdb) links.push(`<a href="https://www.themoviedb.org/${isShow ? "tv" : "movie"}/${ids.tmdb}" target="_blank" rel="noopener">tmdb</a>`);
 
+  // Versions list: only render when there are multiple copies
+  let versionsHtml = "";
+  if (versionCount > 1 && item.versions?.length) {
+    versionsHtml = `<div class="versions-list">
+      <strong>Versions:</strong><br>${item.versions.map(v => {
+        const parts = [];
+        if (v.resolution) parts.push(v.resolution);
+        if (v.video_codec) parts.push(esc(v.video_codec));
+        if (v.audio_codec) parts.push(esc(v.audio_codec));
+        if (v.container) parts.push(esc(v.container));
+        if (v.file_size_bytes) parts.push(fmtBytes(v.file_size_bytes));
+        return `<span class="version-chip">${parts.join(" · ") || "?"}</span>`;
+      }).join("")}
+    </div>`;
+  }
+
+  // Episodes (only present when include_episodes was enabled at scan time)
+  let episodesHtml = "";
+  if (isShow && item.episodes && item.episodes.length) {
+    const ratingKey = item.rating_key;
+    episodesHtml = `<div class="episodes-wrapper">
+      <button class="episodes-toggle" data-show-key="${ratingKey}">
+        ▸ ${item.episodes.length} episodes
+      </button>
+      <div class="episodes-list" id="episodes-${ratingKey}" style="display:none;"></div>
+    </div>`;
+  }
+
   const detail = `<div class="detail">
     <span class="lib">${esc(item.library || "")}</span>${item.studio ? " · " + esc(item.studio) : ""}${item.content_rating ? " · " + esc(item.content_rating) : ""}
     ${item.genres?.length ? "<br>" + esc(item.genres.join(" · ")) : ""}
@@ -583,9 +723,21 @@ function rowHtml(item, q) {
     ${isShow && item.seasons?.length ? `<div class="seasons">${
       item.seasons.map(s => {
         const unwatched = (s.viewed_count || 0) < (s.episode_count || 0);
-        return `<span class="season-chip ${unwatched ? "unwatched" : ""}">S${String(s.season_number ?? "?").padStart(2,"0")} · ${s.episode_count || 0} ep</span>`;
+        const missing = (s.missing_episodes || []).length;
+        const cls = missing > 0 ? "season-chip gaps" : (unwatched ? "season-chip unwatched" : "season-chip");
+        const sn = `S${String(s.season_number ?? "?").padStart(2,"0")}`;
+        let label;
+        if (missing > 0) {
+          const missList = s.missing_episodes.map(n => "E" + String(n).padStart(2,"0")).join(", ");
+          label = `${sn} · ${s.episode_count || 0} ep · missing ${missList}`;
+        } else {
+          label = `${sn} · ${s.episode_count || 0} ep`;
+        }
+        return `<span class="${cls}" title="${esc(label)}">${label}</span>`;
       }).join("")
     }</div>` : ""}
+    ${versionsHtml}
+    ${episodesHtml}
     ${links.length ? `<div class="links">${links.join("")}</div>` : ""}
   </div>`;
 
@@ -595,6 +747,39 @@ function rowHtml(item, q) {
   const numB = `<div class="num"><strong>${fmtDate(item.added_at) || "—"}</strong>${item.rating ? `<br><span>★ ${item.rating}</span>` : ""}</div>`;
 
   return `<div class="row" data-key="${item.rating_key}">${tag}${title}${numA}<div class="detail-hide">${detail}</div>${numB}</div>`;
+}
+
+function renderEpisodes(showItem) {
+  // Group episodes by season for display
+  const eps = showItem.episodes || [];
+  const bySeason = {};
+  for (const ep of eps) {
+    const s = ep.season ?? 0;
+    if (!bySeason[s]) bySeason[s] = [];
+    bySeason[s].push(ep);
+  }
+  const seasonKeys = Object.keys(bySeason).map(Number).sort((a,b) => a-b);
+  return seasonKeys.map(s => {
+    const seasonEps = bySeason[s].sort((a,b) => (a.episode || 0) - (b.episode || 0));
+    return `<div class="ep-season">
+      <div class="ep-season-h">Season ${String(s).padStart(2,"0")}</div>
+      ${seasonEps.map(ep => {
+        const watched = (ep.view_count || 0) > 0;
+        const resTag = ep.resolution ? `<span class="ep-res">${ep.resolution}</span>` : "";
+        const vCount = ep.version_count || (ep.versions?.length || 0);
+        const vTag = vCount > 1 ? `<span class="ep-versions">×${vCount}</span>` : "";
+        const checkmark = watched ? '<span class="ep-watched">✓</span>' : '<span class="ep-unwatched">○</span>';
+        const sizeStr = ep.file_size_bytes ? ` · ${fmtBytes(ep.file_size_bytes)}` : "";
+        return `<div class="ep-row">
+          ${checkmark}
+          <span class="ep-num">E${String(ep.episode ?? "?").padStart(2,"0")}</span>
+          <span class="ep-title">${esc(ep.title || "(untitled)")}</span>
+          ${resTag}${vTag}
+          <span class="ep-meta">${ep.duration_min ? ep.duration_min + "m" : ""}${sizeStr}</span>
+        </div>`;
+      }).join("")}
+    </div>`;
+  }).join("");
 }
 
 function filterAndRender() {
@@ -610,6 +795,7 @@ function filterAndRender() {
   if (QUICK.recent) list = list.filter(isRecent);
   if (QUICK.unwatched) list = list.filter(isUnwatched);
   if (QUICK.uhd) list = list.filter(i => i.resolution === "4K");
+  if (QUICK.gaps) list = list.filter(i => (i.missing_episode_count || 0) > 0);
   if (q) {
     const tokens = q.split(/\s+/).filter(Boolean);
     list = list.filter(i => tokens.every(t => i._blob.includes(t)));
@@ -660,6 +846,30 @@ function setupObserver() {
     if (entries.some(e => e.isIntersecting)) renderMore();
   }, { rootMargin: "400px" });
   OBSERVER.observe($("sentinel"));
+
+  // Delegated handler for episode expand/collapse
+  $("results").addEventListener("click", (e) => {
+    const btn = e.target.closest(".episodes-toggle");
+    if (!btn) return;
+    const key = btn.dataset.showKey;
+    const list = document.getElementById("episodes-" + key);
+    if (!list) return;
+    if (list.style.display === "none") {
+      // Lazy-render content the first time it opens
+      if (!list.dataset.rendered) {
+        const item = ITEMS.find(i => String(i.rating_key) === String(key));
+        if (item) {
+          list.innerHTML = renderEpisodes(item);
+          list.dataset.rendered = "1";
+        }
+      }
+      list.style.display = "block";
+      btn.innerHTML = btn.innerHTML.replace("▸", "▾");
+    } else {
+      list.style.display = "none";
+      btn.innerHTML = btn.innerHTML.replace("▾", "▸");
+    }
+  });
 }
 
 function computeStats() {
@@ -777,10 +987,13 @@ async function triggerRefresh() {
 
 let lastScanTimestamp = null;
 let lastErrorSeen = null;
+let WAS_SCANNING = false;
 async function pollStatus() {
   const status = await fetchStatus();
   updateMeta(DATA, status);
   if (!status) return;
+
+  WAS_SCANNING = !!status.scanning;
 
   // Detect scan completion
   if (status.last_scan && status.last_scan !== lastScanTimestamp) {
@@ -1129,7 +1342,13 @@ setupObserver();
     fetch("api/refresh", { method: "POST" }).catch(() => {});
   }
 
-  STATUS_TIMER = setInterval(pollStatus, 5000);
+  // Adaptive polling: 2s while scanning, 5s when idle, so progress feels live
+  const tick = async () => {
+    await pollStatus();
+    const delay = WAS_SCANNING ? 2000 : 5000;
+    STATUS_TIMER = setTimeout(tick, delay);
+  };
+  STATUS_TIMER = setTimeout(tick, 2000);
 })();
 </script>
 </body>

@@ -29,7 +29,7 @@ from aiohttp import web
 import exporter
 import telegram_bot
 
-VERSION = "1.3.3"
+VERSION = "1.4.1"
 
 OPTIONS_PATH = Path("/data/options.json")
 WWW_DIR = Path("/data/www")
@@ -70,6 +70,7 @@ STATE = {
     "version": VERSION,
     "retry_after": None,
     "consecutive_failures": 0,
+    "progress": None,
 }
 scan_lock = asyncio.Lock()
 
@@ -341,10 +342,18 @@ async def run_scan():
             return
         started = datetime.now(timezone.utc)
         previous_counts = STATE.get("counts")
+        STATE["progress"] = {"phase": "connecting"}
+        save_state()
+
+        def _progress(p):
+            STATE["progress"] = p
+
         try:
             loop = asyncio.get_event_loop()
             payload = await loop.run_in_executor(
-                None, lambda: exporter.run_export(opts, log_fn=logging.info)
+                None, lambda: exporter.run_export(
+                    opts, log_fn=logging.info, progress_fn=_progress
+                )
             )
             target = write_payload(payload, opts.get("gzip_output", True))
             size_kb = target.stat().st_size / 1024
@@ -440,6 +449,7 @@ async def run_scan():
                 logging.debug(f"skipping notification for repeated connection failure #{STATE.get('consecutive_failures')}")
         finally:
             STATE["scanning"] = False
+            STATE["progress"] = None
             save_state()
 
 
