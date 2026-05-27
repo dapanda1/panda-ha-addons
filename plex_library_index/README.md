@@ -1,4 +1,4 @@
-# Noah's Home Assistant Add-ons
+# Dapanda1's Home Assistant Add-ons
 
 Personal Home Assistant add-on repository.
 
