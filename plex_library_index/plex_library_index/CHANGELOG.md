@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.4.2 — 2026-05-27
+
+### Added
+- **"Clear library data" button** in the Preferences → Maintenance section. Deletes the exported library JSON and resets scan state (last scan time, counts, error history, retry state) but leaves configuration and display preferences alone. Useful when:
+  - Schema changes have left old data in a stale format
+  - You want a clean rebuild without uninstalling
+  - Testing scan behavior from scratch
+- New `POST /api/clear-library` endpoint backing this. Returns 409 if a scan is in progress.
+- Confirms before clearing (browser confirm dialog) to prevent accidental clicks.
+
 ## 1.4.1 — 2026-05-27
 
 ### Added — missing-episode detection

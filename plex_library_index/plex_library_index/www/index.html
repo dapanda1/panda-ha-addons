@@ -254,6 +254,8 @@
   .prefs-grid .ro code { background: var(--panel); padding: 2px 6px; border: 1px solid var(--rule); font-size: 12px; }
   .prefs-actions { margin-top: 18px; display: flex; gap: 10px; flex-wrap: wrap; }
   .prefs-actions button { font-size: 12px; padding: 9px 18px; }
+  .prefs-actions button.danger { color: var(--uhd); border-color: var(--uhd); }
+  .prefs-actions button.danger:hover { background: var(--uhd); color: var(--bg); border-color: var(--uhd); }
   .prefs-warning { background: rgba(216,166,87,0.06); border: 1px solid var(--accent-dim); padding: 10px 14px; font-size: 12px; color: var(--ink-dim); margin-bottom: 18px; }
   .prefs-warning strong { color: var(--ink); }
   .ok-check { color: var(--success); }
@@ -441,6 +443,21 @@
       </div>
       <div class="prefs-actions">
         <button id="test-telegram-btn">send test telegram message</button>
+      </div>
+    </div>
+
+    <div class="prefs-section">
+      <h2>Maintenance</h2>
+      <div class="sub">Destructive actions. Config and preferences are not affected — only the library data and scan state.</div>
+      <div class="prefs-grid">
+        <label>Clear library data</label>
+        <div class="ro">
+          Removes the exported library JSON and resets all scan state.
+          The next scheduled or manual scan will rebuild from scratch.
+        </div>
+      </div>
+      <div class="prefs-actions">
+        <button id="clear-library-btn" class="danger">Clear library data</button>
       </div>
     </div>
 
@@ -1259,6 +1276,43 @@ async function testTelegram() {
   }
 }
 
+async function clearLibrary() {
+  if (!confirm(
+    "This will permanently delete the current library index and reset all scan state.\n\n" +
+    "Configuration and preferences are NOT affected.\n\n" +
+    "The next scan will rebuild from scratch. Continue?"
+  )) return;
+
+  const btn = $("clear-library-btn");
+  btn.disabled = true;
+  try {
+    const r = await fetch("api/clear-library", { method: "POST" });
+    const j = await r.json();
+    if (r.ok && j.ok) {
+      toast(j.message || "library cleared", "success");
+      // Reset the UI state
+      DATA = null;
+      ITEMS = [];
+      FILTERED = [];
+      RENDERED = 0;
+      lastScanTimestamp = null;
+      lastErrorSeen = null;
+      $("results").innerHTML = '<div class="empty">library cleared — click ↻ refresh now to rescan</div>';
+      $("stats").hidden = true;
+      $("meta").innerHTML = "no data";
+      $("about-last-scan").textContent = "—";
+      $("about-duration").textContent = "—";
+      $("about-error").textContent = "none";
+    } else {
+      toast(j.message || "clear failed", "error");
+    }
+  } catch (e) {
+    toast("network error: " + e.message, "error");
+  } finally {
+    setTimeout(() => btn.disabled = false, 1000);
+  }
+}
+
 function switchView(name) {
   document.querySelectorAll(".nav-btn").forEach(b => b.classList.toggle("active", b.dataset.view === name));
   document.querySelectorAll(".view").forEach(v => v.classList.remove("active"));
@@ -1298,6 +1352,7 @@ $("prefs-save").addEventListener("click", savePrefs);
 $("prefs-reset").addEventListener("click", resetPrefs);
 $("test-notify-btn").addEventListener("click", testNotify);
 $("test-telegram-btn").addEventListener("click", testTelegram);
+$("clear-library-btn").addEventListener("click", clearLibrary);
 
 document.addEventListener("keydown", (e) => {
   if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT" || e.target.tagName === "TEXTAREA") {

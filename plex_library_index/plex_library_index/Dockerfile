@@ -46,7 +46,7 @@ LABEL \
   io.hass.name="Plex Library Index" \
   io.hass.description="Plex library exporter + ingress-served search page" \
   io.hass.type="addon" \
-  io.hass.version="1.4.1" \
+  io.hass.version="1.4.2" \
   io.hass.arch="aarch64" \
   org.opencontainers.image.title="Plex Library Index" \
   org.opencontainers.image.description="Plex library exporter and searchable index, served via HA ingress." \

@@ -29,7 +29,7 @@ from aiohttp import web
 import exporter
 import telegram_bot
 
-VERSION = "1.4.1"
+VERSION = "1.4.2"
 
 OPTIONS_PATH = Path("/data/options.json")
 WWW_DIR = Path("/data/www")
@@ -724,6 +724,48 @@ async def handle_test_telegram(request):
     )
 
 
+async def handle_clear_library(request):
+    """Delete the library JSON file(s) and reset scan state, so the next
+    scan starts completely from scratch. Does NOT touch config/preferences."""
+    if scan_lock.locked():
+        return web.json_response(
+            {"ok": False, "message": "scan in progress — wait for it to finish first"},
+            status=409,
+        )
+
+    removed = []
+    for path in (LIBRARY_JSON_GZ, LIBRARY_JSON):
+        if path.exists():
+            try:
+                path.unlink()
+                removed.append(path.name)
+            except Exception as e:
+                logging.warning(f"could not remove {path}: {e}")
+
+    # Reset scan-related state. Keep retry_after / consecutive_failures cleared
+    # too, since this is a deliberate reset.
+    STATE["last_scan"] = None
+    STATE["last_error"] = None
+    STATE["last_duration_s"] = None
+    STATE["counts"] = None
+    STATE["previous_counts"] = None
+    STATE["retry_after"] = None
+    STATE["consecutive_failures"] = 0
+    STATE["progress"] = None
+    save_state()
+
+    # Drop the in-memory cache too
+    invalidate_library_cache()
+
+    logging.info(f"library cleared (removed: {', '.join(removed) if removed else 'no files present'})")
+    return web.json_response({
+        "ok": True,
+        "removed": removed,
+        "message": f"library cleared ({len(removed)} file(s) removed)" if removed
+                   else "library was already empty",
+    })
+
+
 def build_app():
     app = web.Application()
     app.router.add_get("/", handle_index)
@@ -739,6 +781,7 @@ def build_app():
     app.router.add_get("/api/config-summary", handle_config_summary)
     app.router.add_post("/api/test-notify", handle_test_notify)
     app.router.add_post("/api/test-telegram", handle_test_telegram)
+    app.router.add_post("/api/clear-library", handle_clear_library)
     return app
 
 
