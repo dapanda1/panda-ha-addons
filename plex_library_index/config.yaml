@@ -4,7 +4,7 @@ slug: "plex_library_index"
 description: "Scans Plex library and serves a searchable index inside Home Assistant. Sidebar-only, no external port."
 arch:
   - aarch64
-url: "https://github.com/dapanda1/panda-ha-addons"
+url: "https://github.com/dapanda1/panda-ha-addons/tree/main/plex_library_index"
 init: false
 startup: services
 boot: auto
