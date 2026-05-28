@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.4.3 — 2026-05-28
+
+### Changed (metadata)
+- `config.yaml` `url` field and the Dockerfile's `org.opencontainers.image.source` label now point to the add-on's specific directory in the repo (`.../tree/main/plex_library_index`) instead of the repo root. Makes the "View on GitHub" link in HA's add-on store go directly to this add-on rather than the parent repository.
+
 ## 1.4.2 — 2026-05-27
 
 ### Added

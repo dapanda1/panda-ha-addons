@@ -21,10 +21,15 @@ app, no exposed port.
 
 ### 🔌 [Plex WOL Listener](./plex_wol_listener)
 
-Wakes a sleeping Plex server (Wake-on-LAN) when it's needed, so the machine
-hosting Plex can sleep when idle and power up on demand.
+A Home Assistant add-on that proxies Plex traffic and wakes your Plex server
+via Wake-on-LAN when a client connects. Includes Plex token validation,
+GeoIP blocking, flood detection, auto-sleep, HA sensors, dashboard toggles,
+and notifications.
 
-> _See the add-on's own README for current configuration and usage details._
+### 📬 [HA Media Request](./ha_media_request)
+
+Polls a Gmail inbox via IMAP. When an approved sender emails, each line of
+the body becomes a media request item.
 
 ## Installation
 
@@ -50,12 +55,8 @@ panda-ha-addons/
 ├── README.md              ← this file
 ├── repository.yaml        ← repository metadata (name, url, maintainer)
 ├── plex_library_index/    ← add-on
-│   ├── config.yaml
-│   ├── Dockerfile
-│   └── …
-└── plex_wol_listener/     ← add-on
-    ├── config.json
-    └── …
+├── plex_wol_listener/     ← add-on
+└── ha_media_request/      ← add-on
 ```
 
 Each add-on lives in its own top-level folder. The Supervisor reads each
