@@ -1,0 +1,83 @@
+name: "WebURL SMS Login"
+description: "Automated browser login to TextNow with scheduled SMS sending. Cycles through pre-defined messages on a cron schedule."
+version: "2.5.2"
+slug: "weburl_sms"
+arch:
+  - amd64
+  - aarch64
+startup: "application"
+boot: "auto"
+init: false
+host_network: true
+map:
+  - config:rw
+hassio_api: true
+homeassistant_api: true
+environment:
+  DISPLAY: ":99"
+options:
+  textnow_email: ""
+  imap_user: ""
+  imap_app_password: ""
+  imap_server: "imap.gmail.com"
+  imap_port: 993
+  sender_filter: "textnow"
+  code_timeout: 120
+  code_poll_interval: 5
+  timeout_ms: 20000
+  send_to_number: ""
+  message_1: ""
+  message_2: ""
+  message_3: ""
+  message_4: ""
+  message_5: ""
+  cron_schedule: "0 9 * * *"
+  retry_count: 2
+  retry_delay: 30
+  selector_new_message: ""
+  selector_recipient: ""
+  selector_message_input: ""
+  selector_send_button: ""
+  notify_title_success: "WebURL SMS Login — Sent"
+  notify_message_success: "SMS sent successfully."
+  notify_title_failure: "WebURL SMS Login — Failed"
+  notify_message_failure: "SMS sending failed. Check add-on logs and screenshots."
+  notify_mobile_device: ""
+  timezone: ""
+  captcha_hold_base: 10
+  captcha_hold_random: 10
+  captcha_post_wait: 5
+  chrome_version: "146"
+schema:
+  textnow_email: email
+  imap_user: email?
+  imap_app_password: password
+  imap_server: str
+  imap_port: int
+  sender_filter: str
+  code_timeout: int
+  code_poll_interval: int
+  timeout_ms: int
+  send_to_number: str
+  message_1: str
+  message_2: str?
+  message_3: str?
+  message_4: str?
+  message_5: str?
+  cron_schedule: str
+  retry_count: int
+  retry_delay: int
+  selector_new_message: str?
+  selector_recipient: str?
+  selector_message_input: str?
+  selector_send_button: str?
+  notify_title_success: str
+  notify_message_success: str
+  notify_title_failure: str
+  notify_message_failure: str
+  notify_mobile_device: str?
+  timezone: str?
+  captcha_hold_base: int
+  captcha_hold_random: int
+  captcha_post_wait: int
+  chrome_version: str?
