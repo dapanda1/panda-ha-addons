@@ -12,7 +12,7 @@ If any line is exactly "wakeup" (case-insensitive), the entire email
 is silently discarded.
 """
 
-__version__ = "2.0.1"
+__version__ = "2.0.2"
 
 import imaplib
 import email

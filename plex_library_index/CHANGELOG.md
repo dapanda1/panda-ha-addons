@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.5 — 2026-09-13
+
+### Fixed — build failure on latest HA base image
+- **Docker build failed with `error: [Errno 2] No such file or directory: 'cc'`.** Root cause: the Home Assistant `aarch64-base:latest` image moved from Python 3.12 to Python 3.14, but `aiohttp==3.10.5` was pinned and has no pre-built wheels for cp314. pip fell back to compiling from source, which required a C compiler that isn't in the base image.
+- Bumped `aiohttp` from `==3.10.5` to `>=3.11.11` (has cp314 wheels) and `plexapi` from `==4.16.1` to `>=4.16.1` (same version floor, but no longer hard-pinned).
+- Added `--only-binary=:all:` to pip install so if this ever happens again with a future Python bump, the build fails fast with a clear "no wheel available" error instead of silently trying to compile and hitting a missing-compiler error later.
+
 ## 1.4.4 — 2026-09-13
 
 ### Fixed
