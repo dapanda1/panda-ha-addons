@@ -12,6 +12,8 @@ If any line is exactly "wakeup" (case-insensitive), the entire email
 is silently discarded.
 """
 
+__version__ = "2.0.0"
+
 import imaplib
 import email
 import email.header
@@ -19,9 +21,11 @@ import smtplib
 import json
 import os
 import re
+import sys
 import time
 import html
 import logging
+import threading
 import urllib.request
 import urllib.error
 from email.mime.text import MIMEText
@@ -732,12 +736,64 @@ def run_self_test(config):
     return all_passed
 
 
+# ── Manual poll trigger (stdin listener) ─────────────────────────────
+poll_now_event = threading.Event()
+
+
+def stdin_listener():
+    """Listen for commands on stdin. 'poll' triggers an immediate mail check."""
+    for line in sys.stdin:
+        cmd = line.strip().lower()
+        if cmd == "poll":
+            log.info("Manual poll requested via stdin")
+            poll_now_event.set()
+        else:
+            log.info("Unknown stdin command: %s", cmd)
+
+
+def register_check_now_script():
+    """Create a script entity in HA that sends 'poll' to this add-on's stdin."""
+    script_id = "media_request_check_now"
+    script_config = {
+        "alias": "Media Request — Check Now",
+        "icon": "mdi:email-sync",
+        "sequence": [
+            {
+                "service": "hassio.addon_stdin",
+                "data": {
+                    "addon": "local_ha_media_request",
+                    "input": "poll",
+                },
+            }
+        ],
+    }
+    status, body = ha_api(
+        "POST",
+        f"config/script/config/{script_id}",
+        script_config,
+    )
+    if status == 200:
+        log.info("Registered script.%s in HA", script_id)
+    elif status == 409:
+        log.info("script.%s already exists — skipping", script_id)
+    else:
+        log.warning("Failed to register script.%s: %s %s", script_id, status, body)
+
+
 # ── Main loop ────────────────────────────────────────────────────────
 def main():
-    log.info("Media Request Tracker v2.0 starting")
+    log.info("Media Request Tracker v%s starting", __version__)
     config = load_config()
 
     run_self_test(config)
+
+    # Register the "Check Now" script button in HA
+    register_check_now_script()
+
+    # Start stdin listener thread
+    stdin_thread = threading.Thread(target=stdin_listener, daemon=True)
+    stdin_thread.start()
+    log.info("Stdin listener started — send 'poll' for manual check")
 
     log.info("Polling every %d seconds", config.get("poll_interval_seconds", 60))
     log.info("IMAP server: %s", config.get("imap_server", "imap.gmail.com"))
@@ -764,7 +820,12 @@ def main():
             check_completed_items(config)
         except Exception as e:
             log.error("Completion check error: %s", e)
-        time.sleep(poll_interval)
+
+        # Wait for poll_interval OR a manual trigger, whichever comes first
+        triggered = poll_now_event.wait(timeout=poll_interval)
+        if triggered:
+            poll_now_event.clear()
+            log.info("Manual poll triggered — running now")
 
 
 if __name__ == "__main__":

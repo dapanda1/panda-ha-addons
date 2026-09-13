@@ -8,6 +8,7 @@
   "startup": "services",
   "boot": "auto",
   "init": false,
+  "stdin": true,
   "homeassistant_api": true,
   "options": {
     "imap_server": "imap.gmail.com",
