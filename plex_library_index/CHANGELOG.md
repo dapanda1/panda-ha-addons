@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.4.4 — 2026-09-13
+
+### Fixed
+- **Nightly failure notifications stopped firing after the first outage.** Root cause: the "notify only on first failure" rule (introduced in 1.3.0) never reset for servers that stayed offline for long periods. `consecutive_failures` grew without bound, so every scheduled scan was treated as a "later-than-first" failure and stayed silent — even though from the user's perspective each night is a fresh event.
+
+### Changed — outage alert policy
+- **First failure of an outage: always notifies** via the configured HA `notify_service`.
+- **Weekly Sunday reminder while the outage continues**: if a scheduled scan fails, today is Sunday in the local timezone, AND the last alert was more than 3 days ago, a fresh alert is sent.
+- **Successful scans clear all outage tracking**, so the next failure notifies fresh.
+- Examples of the new behavior:
+  - Failure Monday 3 AM → alert. Tue–Sat scans fail silently. Sunday 3 AM → alert. Following Sunday → alert.
+  - Failure Friday 3 AM → alert. Sat silent. Sunday scan skipped (only 2 days since last alert). Following Sunday (9 days after original) → alert.
+- Non-connection errors (auth failure, bad config, unexpected exceptions) still notify on every failure.
+- Telegram is intentionally excluded from the weekly-reminder path — HA notifications only.
+
+### Internal
+- New `STATE` fields: `outage_started_at`, `outage_last_alerted_at` (ISO timestamps). Cleared on successful scan and on the "Clear library data" action.
+- New helper `_should_notify_failure(is_connection_error)` encapsulates the policy.
+
 ## 1.4.3 — 2026-05-28
 
 ### Changed (metadata)

@@ -29,7 +29,7 @@ from aiohttp import web
 import exporter
 import telegram_bot
 
-VERSION = "1.4.3"
+VERSION = "1.4.4"
 
 OPTIONS_PATH = Path("/data/options.json")
 WWW_DIR = Path("/data/www")
@@ -70,6 +70,8 @@ STATE = {
     "version": VERSION,
     "retry_after": None,
     "consecutive_failures": 0,
+    "outage_started_at": None,      # ISO timestamp — set on first notified failure of an outage
+    "outage_last_alerted_at": None, # ISO timestamp — set every time we send an outage alert
     "progress": None,
 }
 scan_lock = asyncio.Lock()
@@ -368,9 +370,11 @@ async def run_scan():
             STATE["last_duration_s"] = round(duration, 1)
             STATE["previous_counts"] = previous_counts
             STATE["counts"] = counts
-            # Successful scan — reset retry backoff
+            # Successful scan — reset retry backoff and clear outage tracking
             STATE["retry_after"] = None
             STATE["consecutive_failures"] = 0
+            STATE["outage_started_at"] = None
+            STATE["outage_last_alerted_at"] = None
 
             # Refresh cache so Telegram queries see new data
             invalidate_library_cache()
@@ -433,10 +437,22 @@ async def run_scan():
                         f"retries; next attempt at scheduled scan time"
                     )
 
-            # Only notify on the FIRST connection failure to avoid notification
-            # spam during extended outages. Always notify on other error types.
-            should_notify_failure = not is_connection_error or STATE.get("consecutive_failures", 0) == 1
+            # Decide whether to send a failure notification.
+            #
+            # Rules (see _should_notify_failure):
+            # - Non-connection errors always notify.
+            # - First failure of a Plex-unreachable outage always notifies.
+            # - During an ongoing outage, only re-notify on Sundays (local time),
+            #   and only if at least 3 days have passed since the last alert.
+            # Successful scans clear the outage state so the next failure
+            # notifies fresh.
+            should_notify_failure = _should_notify_failure(is_connection_error)
             if should_notify_failure:
+                now_iso = datetime.now(timezone.utc).isoformat()
+                if STATE.get("outage_started_at") is None:
+                    STATE["outage_started_at"] = now_iso
+                STATE["outage_last_alerted_at"] = now_iso
+
                 if opts.get("notify_on_error") and opts.get("notify_service"):
                     await send_notification(
                         opts["notify_service"],
@@ -446,7 +462,10 @@ async def run_scan():
                 if opts.get("telegram_enabled") and opts.get("telegram_notify_on_error"):
                     await _telegram_broadcast(f"⚠️ Plex Library Index — scan failed\n\nError: {e}")
             else:
-                logging.debug(f"skipping notification for repeated connection failure #{STATE.get('consecutive_failures')}")
+                logging.debug(
+                    "suppressing failure notification per weekly-reminder policy "
+                    f"(consecutive failures: {STATE.get('consecutive_failures')})"
+                )
         finally:
             STATE["scanning"] = False
             STATE["progress"] = None
@@ -467,6 +486,45 @@ def _is_connection_error(exc):
         "failed to establish",
     ]
     return any(s in err_str for s in indicators)
+
+
+def _should_notify_failure(is_connection_error):
+    """Decide whether to send a notification for a scan failure.
+
+    Policy:
+    - Non-connection errors (auth failure, bad config, unexpected exceptions):
+      always notify — these usually need attention regardless of history.
+    - First failure of a Plex-unreachable outage: always notify.
+    - Subsequent failures during the same outage: notify only when today is
+      Sunday in the local timezone AND the last alert was at least 3 days ago.
+      Outage state clears on the next successful scan.
+
+    This gives one notification when an outage begins and a weekly Sunday
+    reminder while the server stays down, without spamming on every scan.
+    """
+    if not is_connection_error:
+        return True
+
+    last_alerted = STATE.get("outage_last_alerted_at")
+    if not last_alerted:
+        # Either no prior outage or this is the first failure of one.
+        return True
+
+    # Fail open — if the timestamp parses badly, don't accidentally go silent.
+    try:
+        last_dt = datetime.fromisoformat(last_alerted)
+    except (ValueError, TypeError):
+        return True
+
+    now_local = datetime.now().astimezone()
+    if now_local.weekday() != 6:  # 0=Mon .. 6=Sun
+        return False
+
+    # Compare in aware datetimes; convert stored UTC to local
+    if last_dt.tzinfo is None:
+        last_dt = last_dt.replace(tzinfo=timezone.utc)
+    days_since = (now_local - last_dt.astimezone()).total_seconds() / 86400.0
+    return days_since >= 3.0
 
 
 def _parse_hhmm(s):
@@ -751,6 +809,8 @@ async def handle_clear_library(request):
     STATE["previous_counts"] = None
     STATE["retry_after"] = None
     STATE["consecutive_failures"] = 0
+    STATE["outage_started_at"] = None
+    STATE["outage_last_alerted_at"] = None
     STATE["progress"] = None
     save_state()
 
