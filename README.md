@@ -31,6 +31,26 @@ and notifications.
 Polls a Gmail inbox via IMAP. When an approved sender emails, each line of
 the body becomes a media request item.
 
+### 💬 [WebURL SMS Login](./weburl_sms_login)
+
+Automated browser login to TextNow with scheduled SMS sending. Signs in with
+Chromium (Selenium) on a virtual display and cycles through up to five
+pre-defined messages on a cron schedule.
+
+### 💧 [Utility CustConnect Water](./utility_custconnect_water)
+
+Imports hourly water usage from CustConnect utility portals
+(`<utility>.custconnect.com/HomeConnect`, or a utility's own domain) into
+Home Assistant long-term statistics for the Energy dashboard. Unofficial;
+not affiliated with CustConnect or any utility.
+
+- Hourly history with automatic re-import of recent hours to pick up utility corrections
+- Works with any CustConnect portal: enter your login page URL or subdomain
+- Detects meter units (gallons, CCF/HCF, cubic feet, cubic meters, and more) and converts to gallons
+- Sensors for last hour, last full day, billing period usage and projection, same period last year, data freshness, and update status
+- Failure alerts via Home Assistant notifications and an optional mobile `notify.*` service
+- No exposed ports; outbound connections only
+
 ## Installation
 
 In Home Assistant:
@@ -52,11 +72,14 @@ After installing, open the add-on's **Configuration** tab to set it up, then
 
 ```
 panda-ha-addons/
-├── README.md              ← this file
-├── repository.yaml        ← repository metadata (name, url, maintainer)
-├── plex_library_index/    ← add-on
-├── plex_wol_listener/     ← add-on
-└── ha_media_request/      ← add-on
+├── README.md                    ← this file
+├── LICENSE                      ← MIT license
+├── repository.json              ← repository metadata (name, url, maintainer)
+├── plex_library_index/          ← add-on
+├── plex_wol_listener/           ← add-on
+├── ha_media_request/            ← add-on
+├── weburl_sms_login/            ← add-on
+└── utility_custconnect_water/   ← add-on
 ```
 
 Each add-on lives in its own top-level folder. The Supervisor reads each

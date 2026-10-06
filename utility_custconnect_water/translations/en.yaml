@@ -1,0 +1,107 @@
+configuration:
+  portal_url:
+    name: Portal URL
+    description: >-
+      Address of your utility's CustConnect portal. Copy the login page address from your browser,
+      e.g. https://santarosa.custconnect.com/HomeConnect/login.html. A custconnect.com subdomain
+      alone also works, e.g. santarosa. Utilities on their own domain: paste the full login page
+      URL, e.g. https://water.example.gov/HomeConnect/login.html. https is assumed when omitted.
+      Do not put the username or password in the URL.
+  username:
+    name: Username
+    description: >-
+      The username you use to sign in to the portal (not necessarily your email address),
+      e.g. jsmith. Required.
+  password:
+    name: Password
+    description: >-
+      The password you use to sign in to the portal. Required. Stored in the add-on options only;
+      it is never logged.
+  time_zone:
+    name: Portal time zone
+    description: >-
+      Optional. IANA time zone the utility reports readings in, e.g. America/Los_Angeles or
+      America/Denver. Leave empty to use the Home Assistant time zone, which is correct when the
+      utility is in the same time zone as your home.
+  poll_interval_minutes:
+    name: Poll interval (minutes)
+    description: >-
+      Minutes between updates; each update signs in to the portal once. Range 15–1440, default 60.
+      The portal adds hourly readings once a day in a batch (12–36 hours old), and every update
+      re-reads recent days, so a longer interval such as 180 (every 3 hours) loses no data and means
+      fewer sign-ins.
+  retry_minutes:
+    name: Retry interval (minutes)
+    description: >-
+      Minutes to wait before retrying after a network, portal, or Home Assistant error.
+      Range 5–240, default 15. Never longer than the poll interval, e.g. 30.
+  auth_retry_minutes:
+    name: Login retry interval (minutes)
+    description: >-
+      Minutes to wait after the portal rejects the username or password before trying again.
+      Range 15–1440, default 60. Raise it, e.g. 240, if your portal locks accounts after repeated
+      failed sign-ins.
+  initial_history_days:
+    name: Initial history (days)
+    description: >-
+      Days of hourly history imported the first time, when no statistics exist yet. Range 1–400,
+      default 30. Example: 365 imports a full year, if the portal has that much history.
+  refresh_days:
+    name: Refresh window (days)
+    description: >-
+      Days re-downloaded on every update so corrections the utility makes to recent readings are
+      picked up. Range 2–60, default 7. Example: 14 if your utility often revises readings late.
+  clear_statistics_on_start:
+    name: Clear statistics on start
+    description: >-
+      When on, deletes this add-on's water statistic at the next start and re-imports the initial
+      history. Use it to start over after changing time zone or history settings. Default off.
+      Turn it off again after one start, otherwise history is wiped on every restart.
+  statistic_name:
+    name: Statistic name
+    description: >-
+      Optional. Name shown for the water statistic in the Energy dashboard and statistics graphs,
+      e.g. Home water. Leave empty for "Water usage (<portal hostname>)". The statistic ID does not
+      change.
+  billing_sensors:
+    name: Billing period sensors
+    description: >-
+      When on (default), creates three extra sensors from the portal: usage so far this billing
+      period, projected total for the period, and the same period last year. Turn off if your
+      portal has no billing data or you do not need them.
+  notify_on_error:
+    name: Alert on failed updates
+    description: >-
+      When on (default), failed updates create a Home Assistant notification (the bell icon in the
+      sidebar, visible in the browser and the app) and, if a mobile device is set below, a push
+      notification. A rejected username or password alerts immediately; other errors alert after
+      the number of failures set below.
+  notify_after_failures:
+    name: Failures before alerting
+    description: >-
+      Consecutive failed updates before an alert is sent, so one temporary portal or network
+      problem does not alert. Range 1–24, default 3. Example: with a 60-minute poll interval and
+      15-minute retries, 3 means about 30 minutes of failures. Login failures ignore this and
+      alert at once.
+  notify_on_recovery:
+    name: Alert when updates resume
+    description: >-
+      When on (default), sends a "resumed" message to the mobile device after a failure alert once
+      updates work again. The Home Assistant notification is removed automatically either way.
+  notify_service:
+    name: Mobile device notify service
+    description: >-
+      Optional. Notify service of the phone or tablet that should also get alerts, e.g.
+      mobile_app_pixel_10_pro or notify.mobile_app_pixel_10_pro. Find yours under Developer tools →
+      Actions, search "notify.mobile_app". Leave empty for Home Assistant notifications only.
+  notify_high_priority:
+    name: High-priority mobile alerts
+    description: >-
+      When on (default), mobile alerts are sent as high priority on Android (delivered immediately,
+      even when the phone is idle) and time-sensitive on iOS (can show during Focus modes if allowed
+      in the phone's settings). Turn off for normal-priority alerts.
+  log_level:
+    name: Log level
+    description: >-
+      Amount of detail in the add-on log. Default info: one line per update. Use debug when
+      troubleshooting; warning or error to show problems only.

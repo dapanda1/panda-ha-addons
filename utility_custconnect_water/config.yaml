@@ -1,0 +1,52 @@
+name: Utility CustConnect Water
+version: "1.0.0"
+slug: utility_custconnect_water
+description: Hourly water usage from CustConnect utility portals into Home Assistant statistics and sensors
+url: https://github.com/dapanda1/panda-ha-addons/tree/main/utility_custconnect_water
+arch:
+  - aarch64
+  - amd64
+init: false
+startup: application
+boot: auto
+host_network: false
+homeassistant_api: true
+
+# No `ports:` or `ingress:` on purpose; the add-on only makes outbound connections.
+
+options:
+  portal_url: ""
+  username: ""
+  password: ""
+  poll_interval_minutes: 60
+  retry_minutes: 15
+  auth_retry_minutes: 60
+  initial_history_days: 30
+  refresh_days: 7
+  clear_statistics_on_start: false
+  billing_sensors: true
+  notify_on_error: true
+  notify_after_failures: 3
+  notify_on_recovery: true
+  notify_service: ""
+  notify_high_priority: true
+  log_level: info
+schema:
+  portal_url: str
+  username: str
+  password: password
+  time_zone: str?
+  poll_interval_minutes: int(15,1440)
+  retry_minutes: int(5,240)
+  auth_retry_minutes: int(15,1440)
+  initial_history_days: int(1,400)
+  refresh_days: int(2,60)
+  clear_statistics_on_start: bool
+  statistic_name: str?
+  billing_sensors: bool
+  notify_on_error: bool
+  notify_after_failures: int(1,24)
+  notify_on_recovery: bool
+  notify_service: str?
+  notify_high_priority: bool
+  log_level: list(debug|info|warning|error)

@@ -1,0 +1,50 @@
+# Utility CustConnect Water Dashboard Card
+#
+# SETUP:
+# 1. Replace "santarosa" below with your site ID. The add-on log shows it at start:
+#      "entity prefix sensor.utility_custconnect_water_<site ID>"
+# 2. Dashboard → Edit → Add card → Manual, paste everything below the comments.
+#
+# The statistics graph reads the long-term statistic, which keeps its history
+# across restarts. The entities card reads the REST sensors posted by the add-on.
+
+type: vertical-stack
+cards:
+  - type: entities
+    title: Water
+    entities:
+      - entity: sensor.utility_custconnect_water_santarosa_last_day_usage
+        name: Last full day
+      - entity: sensor.utility_custconnect_water_santarosa_last_hour_usage
+        name: Last hour
+      - entity: sensor.utility_custconnect_water_santarosa_billing_period_usage
+        name: Billing period to date
+      - entity: sensor.utility_custconnect_water_santarosa_billing_period_projected
+        name: Billing period projected
+      - entity: sensor.utility_custconnect_water_santarosa_billing_period_last_year
+        name: Same period last year
+      - entity: sensor.utility_custconnect_water_santarosa_data_through
+        name: Data through
+        format: relative
+      - entity: sensor.utility_custconnect_water_santarosa_status
+        name: Update status
+
+  - type: statistics-graph
+    title: Daily water usage (gal)
+    chart_type: bar
+    period: day
+    days_to_show: 30
+    stat_types:
+      - change
+    entities:
+      - utility_custconnect_water:santarosa_water_usage
+
+  - type: statistics-graph
+    title: Hourly water usage, last 3 days (gal)
+    chart_type: bar
+    period: hour
+    days_to_show: 3
+    stat_types:
+      - change
+    entities:
+      - utility_custconnect_water:santarosa_water_usage

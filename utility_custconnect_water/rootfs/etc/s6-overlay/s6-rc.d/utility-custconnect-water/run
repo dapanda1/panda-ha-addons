@@ -1,0 +1,8 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+# Utility CustConnect Water: long-running poller
+
+python3 -u /app/migrate.py
+
+bashio::log.info "Starting Utility CustConnect Water"
+exec python3 -u /app/main.py
