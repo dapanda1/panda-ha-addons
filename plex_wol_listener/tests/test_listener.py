@@ -144,6 +144,65 @@ class ToggleConfigTest(TempDataDir):
         self.assertFalse(L.ToggleManager(True, True, False, False).get_quiet())
 
 
+class NetworkOptsTest(unittest.TestCase):
+    """Bug: the shipped default plex_server_ip 0.0.0.0 made the proxy connect to
+    itself, spawning thousands of threads from a single client connection."""
+
+    def sanitize(self, **opts):
+        opts = dict({"plex_server_port": 32400, "listen_port": 32400,
+                     "target_mac": "aa:bb:cc:dd:ee:ff", "broadcast": "192.168.1.255"}, **opts)
+        problems = L.sanitize_network_opts(opts)
+        return opts, problems
+
+    def test_local_targets_on_same_port_are_refused(self):
+        for ip in ("0.0.0.0", "127.0.0.1"):
+            opts, problems = self.sanitize(plex_server_ip=ip)
+            self.assertEqual(opts["plex_server_ip"], "", ip)
+            self.assertTrue(problems)
+
+    def test_local_target_on_other_port_is_allowed(self):
+        opts, _ = self.sanitize(plex_server_ip="127.0.0.1", plex_server_port=32402)
+        self.assertEqual(opts["plex_server_ip"], "127.0.0.1")
+
+    def test_remote_target_is_kept(self):
+        opts, problems = self.sanitize(plex_server_ip="192.0.2.10")
+        self.assertEqual(opts["plex_server_ip"], "192.0.2.10")
+        self.assertEqual(problems, [])
+
+    def test_placeholder_mac_and_broadcast(self):
+        opts, _ = self.sanitize(plex_server_ip="192.0.2.10", target_mac="00:00:00:00:00:00",
+                                broadcast="0.0.0.0")
+        self.assertEqual(opts["target_mac"], "")
+        self.assertEqual(opts["broadcast"], "255.255.255.255")
+        opts, _ = self.sanitize(plex_server_ip="192.0.2.10", target_mac="zz:bb:cc:dd:ee:ff")
+        self.assertEqual(opts["target_mac"], "")
+
+
+class ProxyDataTest(unittest.TestCase):
+    """Bug: proxy_data used select(), which raises on file descriptors >= 1024."""
+
+    def test_relays_with_high_file_descriptors(self):
+        import resource
+        soft, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if soft < 1200:
+            self.skipTest("fd limit too low to reach fd 1024")
+        filler = [socket.socket() for _ in range(1050)]
+        self.addCleanup(lambda: [s.close() for s in filler])
+        client_side, client = socket.socketpair()
+        upstream, upstream_side = socket.socketpair()
+        self.assertGreaterEqual(upstream.fileno(), 1024)
+        t = threading.Thread(target=L.proxy_data, args=(client, upstream), daemon=True)
+        t.start()
+        client_side.sendall(b"ping")
+        self.assertEqual(upstream_side.recv(4), b"ping")
+        upstream_side.sendall(b"pong")
+        self.assertEqual(client_side.recv(4), b"pong")
+        client_side.close()
+        t.join(5)
+        self.assertFalse(t.is_alive())
+        upstream_side.close()
+
+
 def free_port():
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))

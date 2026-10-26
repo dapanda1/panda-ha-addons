@@ -11,9 +11,9 @@
   "init": false,
   "homeassistant_api": true,
   "options": {
-    "plex_server_ip": "0.0.0.0",
-    "target_mac": "00:00:00:00:00:00",
-    "broadcast": "0.0.0.0",
+    "plex_server_ip": "",
+    "target_mac": "",
+    "broadcast": "255.255.255.255",
     "enable_wol": true,
     "listen_port": 32400,
     "plex_server_port": 32400,

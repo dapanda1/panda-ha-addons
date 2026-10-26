@@ -24,8 +24,8 @@ import logging
 import logging.handlers
 import os
 import signal
+import selectors
 import socket
-import select
 import subprocess
 import threading
 import time
@@ -1285,6 +1285,54 @@ def load_options():
     return defaults
 
 
+def is_local_address(host):
+    """True if `host` is an address of this machine (i.e. we can bind to it)."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind((host, 0))
+        return True
+    except OSError:
+        return False
+
+
+def sanitize_network_opts(opts):
+    """Blank out placeholder or dangerous server/WoL settings in place.
+
+    Returns a list of problems found, for logging.
+    """
+    problems = []
+    server_ip = str(opts.get("plex_server_ip", "")).strip()
+    server_port = int(opts.get("plex_server_port", 32400))
+    listen_port = int(opts.get("listen_port", 32400))
+    if server_ip and server_port == listen_port and is_local_address(server_ip):
+        # 0.0.0.0, 127.x or this host's own IP: every proxied connection would
+        # connect back into the proxy and spawn another, without end
+        problems.append(f"plex_server_ip {server_ip} is this Home Assistant host, so the proxy "
+                        f"would connect to itself — proxying disabled until it's set to the Plex server's IP")
+        server_ip = ""
+    elif not server_ip:
+        problems.append("plex_server_ip is not set — the add-on won't do anything useful")
+    opts["plex_server_ip"] = server_ip
+
+    mac = str(opts.get("target_mac", "")).strip()
+    mac_hex = mac.replace(":", "").replace("-", "").replace(".", "")
+    if mac and (len(mac_hex) != 12 or any(c not in "0123456789abcdefABCDEF" for c in mac_hex)):
+        problems.append(f"target_mac '{mac}' is not a valid MAC address — WoL disabled")
+        mac = ""
+    elif mac and int(mac_hex, 16) == 0:
+        problems.append("target_mac is the 00:00:00:00:00:00 placeholder — WoL disabled")
+        mac = ""
+    opts["target_mac"] = mac
+
+    broadcast = str(opts.get("broadcast", "")).strip()
+    if broadcast in ("", "0.0.0.0"):
+        problems.append("broadcast is not set — using 255.255.255.255 (set your subnet "
+                        "broadcast, e.g. 192.168.1.255, if WoL doesn't reach the server)")
+        broadcast = "255.255.255.255"
+    opts["broadcast"] = broadcast
+    return problems
+
+
 def parse_friendly_names(names_str):
     """Parse 'plexuser:Friendly Name,other:Other Name' into a dict."""
     mapping = {}
@@ -1306,14 +1354,15 @@ def get_friendly_name(plex_user, name_map):
 
 
 def proxy_data(client_sock, upstream_sock):
-    sockets = [client_sock, upstream_sock]
+    # selectors (epoll) rather than select(), which fails on file descriptors >= 1024
+    peers = {client_sock: upstream_sock, upstream_sock: client_sock}
+    sel = selectors.DefaultSelector()
     try:
+        for s in peers:
+            sel.register(s, selectors.EVENT_READ)
         while True:
-            readable, _, errored = select.select(sockets, [], sockets, 30)
-            if errored:
-                break
-            for s in readable:
-                other = upstream_sock if s is client_sock else client_sock
+            for key, _ in sel.select(timeout=30):
+                s = key.fileobj
                 try:
                     data = s.recv(PROXY_BUF)
                 except Exception:
@@ -1321,11 +1370,12 @@ def proxy_data(client_sock, upstream_sock):
                 if not data:
                     return
                 try:
-                    other.sendall(data)
+                    peers[s].sendall(data)
                 except Exception:
                     return
     finally:
-        for s in sockets:
+        sel.close()
+        for s in peers:
             try:
                 s.close()
             except Exception:
@@ -1406,8 +1456,11 @@ def handle_client(client_sock, addr, opts, wol_state, flood, geoip, allowlist, b
         _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
                              allowlist, blocklist, sensors, sleeper, toggle_manager, session_tracker,
                              conn_history, burst_detector, nowake_list, name_map)
+    except Exception as e:
+        log(f"[{addr}] ERROR handling connection: {e}")
     finally:
         connection_tracker.remove(client_sock)
+        client_sock.close()
 
 
 def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
@@ -1449,7 +1502,9 @@ def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
     wake_timeout = int(opts["wake_timeout_seconds"])
 
     if not server_ip:
-        log(f"[{addr}] No plex_server_ip configured — dropping connection.")
+        if wol_disabled_dedup.should_log("no_server_ip"):
+            log(f"[{addr}] No usable plex_server_ip configured — dropping connections "
+                f"(suppressing repeats for {wol_disabled_dedup.cooldown}s)")
         client_sock.close()
         return
 
@@ -1557,6 +1612,7 @@ def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
 
     try:
         upstream = socket.create_connection((server_ip, server_port), timeout=10)
+        upstream.settimeout(None)  # the connect timeout shouldn't apply to proxied reads/writes
     except Exception as e:
         log(f"[{addr}] Failed to connect to {server_ip}:{server_port}: {e}")
         client_sock.close()
@@ -1656,6 +1712,9 @@ def main():
         except Exception as e:
             log(f"Config: WARNING — failed to save corrected settings: {e}")
 
+    for problem in sanitize_network_opts(opts):
+        log(f"*** Config: {problem} ***")
+
     log(f"=== Plex WoL Proxy v{VERSION} ===")
     log(f"  Listen:           0.0.0.0:{listen_port}")
     log(f"  Plex server:      {opts.get('plex_server_ip') or '(NOT SET)'}:{opts.get('plex_server_port', 32400)}")
@@ -1681,9 +1740,6 @@ def main():
     log(f"  Quiet mode:       {'ON' if opts.get('enable_quiet_mode') else 'OFF'}")
     log(f"  Notify target:    {NOTIFY_TARGET or '(persistent only)'}")
     log(f"  HA API token:     {'present' if SUPERVISOR_TOKEN else 'MISSING'}")
-
-    if not opts.get("plex_server_ip"):
-        log("*** WARNING: plex_server_ip is not set. The add-on won't do anything useful. ***")
 
     # Initialize all modules
     wol_state = {"last_wol": 0.0, "lock": threading.Lock()}
