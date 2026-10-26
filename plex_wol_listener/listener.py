@@ -809,27 +809,41 @@ class FloodDetector:
 # Burst detection for smart WoL
 # ---------------------------------------------------------------------------
 class BurstDetector:
-    """Tracks connection bursts to distinguish cold opens from background polls.
+    """Tracks per-IP connection bursts to distinguish cold opens from background polls.
 
-    A cold app open generates many connections in quick succession (loading
-    providers, hubs, libraries, thumbnails). A background poll is a single
-    connection every few minutes. When enabled, WoL is only sent if a burst
-    of connections is detected within the configured window.
+    A cold app open generates many connections from one IP in quick succession
+    (loading providers, hubs, libraries, thumbnails). A background poll is a
+    single connection every few minutes. When enabled, WoL is only sent once a
+    single IP reaches the burst count within the configured window.
+
+    An IP whose only connection in a window was a lone probe is reported by
+    pop_single_probes() after that window has passed, so it can be learned as
+    infrastructure. An IP that connects again within the window (i.e. the start
+    of a real cold open) is never reported.
     """
 
-    def __init__(self, enabled, burst_count, burst_window):
+    def __init__(self, enabled, burst_count, burst_window, wake_timeout=120):
         self.enabled = enabled
         self.burst_count = max(2, burst_count)
         self.burst_window = burst_window
-        self.timestamps = []
+        self.timestamps = {}  # ip -> connection times within the window
+        self.single_probes = {}  # ip -> time of a lone connection awaiting its window to pass
         self.lock = threading.Lock()
         # Once a burst triggers WoL, suppress further checks until
         # the server is confirmed up or the wake times out.
         self.wol_sent_recently = False
         self.wol_sent_time = 0.0
-        self.wol_sent_cooldown = 120  # match wake_timeout
+        self.wol_sent_cooldown = wake_timeout
 
-    def record_and_check(self):
+    def _prune(self, now):
+        for ip in list(self.timestamps):
+            recent = [t for t in self.timestamps[ip] if now - t < self.burst_window]
+            if recent:
+                self.timestamps[ip] = recent
+            else:
+                del self.timestamps[ip]
+
+    def record_and_check(self, ip_str):
         """Record a connection attempt while server is down.
         Returns True if burst threshold is met and WoL should be sent."""
         if not self.enabled:
@@ -840,31 +854,53 @@ class BurstDetector:
             # If we already sent WoL recently, allow through (so clients
             # can wait for the server alongside the first burst)
             if self.wol_sent_recently and (now - self.wol_sent_time) < self.wol_sent_cooldown:
+                self.single_probes.pop(ip_str, None)
                 return True
 
-            self.timestamps = [t for t in self.timestamps if now - t < self.burst_window]
-            self.timestamps.append(now)
-            count = len(self.timestamps)
+            self._prune(now)
+            stamps = self.timestamps.setdefault(ip_str, [])
+            stamps.append(now)
 
-            if count >= self.burst_count:
+            if len(stamps) == 1:
+                self.single_probes.setdefault(ip_str, now)
+            else:
+                self.single_probes.pop(ip_str, None)
+
+            if len(stamps) >= self.burst_count:
                 self.wol_sent_recently = True
                 self.wol_sent_time = now
                 return True
 
             return False
 
-    def reset(self):
-        """Reset burst state when server comes up."""
-        with self.lock:
-            self.timestamps = []
-            self.wol_sent_recently = False
-
-    def get_count(self):
-        """Get current connection count in window (for logging)."""
+    def pop_single_probes(self):
+        """Return IPs whose lone connection's window passed with no follow-up."""
+        if not self.enabled:
+            return []
         now = time.time()
         with self.lock:
-            self.timestamps = [t for t in self.timestamps if now - t < self.burst_window]
-            return len(self.timestamps)
+            expired = [ip for ip, t in self.single_probes.items() if now - t >= self.burst_window]
+            for ip in expired:
+                del self.single_probes[ip]
+        return expired
+
+    def reset(self):
+        """Reset burst state when server comes up.
+
+        Pending single probes are dropped too: once the server is up their
+        follow-up connections are no longer seen here, so they can't be judged.
+        """
+        with self.lock:
+            self.timestamps = {}
+            self.single_probes = {}
+            self.wol_sent_recently = False
+
+    def get_count(self, ip_str):
+        """Get current connection count in window for one IP (for logging)."""
+        now = time.time()
+        with self.lock:
+            self._prune(now)
+            return len(self.timestamps.get(ip_str, []))
 
 
 # ---------------------------------------------------------------------------
@@ -1406,6 +1442,11 @@ def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
         sensors.set_server_status("up")
         burst_detector.reset()
     else:
+        # Auto-learn: IPs that sent a lone probe and nothing else within the
+        # burst window while the server was down are infrastructure
+        for probe_ip in burst_detector.pop_single_probes():
+            nowake_list.learn(probe_ip)
+
         # No-wake list: proxy when up, silently drop when down
         if nowake_list.should_skip_wol(client_ip):
             client_sock.close()
@@ -1413,14 +1454,12 @@ def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
 
         # Smart WoL: check for connection burst — runs regardless of WoL toggle
         # so that learning always works even in test mode
-        burst_ok = burst_detector.record_and_check()
+        burst_ok = burst_detector.record_and_check(client_ip)
 
         if not burst_ok:
-            count = burst_detector.get_count()
+            count = burst_detector.get_count(client_ip)
             log(f"[{addr}]{user_tag} Server down — background poll ignored by smart WoL "
                 f"({count}/{burst_detector.burst_count} connections in window)")
-            # Auto-learn: single probes while server is down are infrastructure
-            nowake_list.learn(client_ip)
             client_sock.close()
             return
 
@@ -1673,6 +1712,7 @@ def main():
         enabled=bool(opts.get("enable_smart_wol", False)),
         burst_count=int(opts.get("smart_wol_burst_count", 3)),
         burst_window=int(opts.get("smart_wol_burst_window", 15)),
+        wake_timeout=int(opts.get("wake_timeout_seconds", 120)),
     )
 
     name_map = parse_friendly_names(str(opts.get("user_friendly_names", "")))
