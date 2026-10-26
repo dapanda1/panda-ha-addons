@@ -327,6 +327,35 @@ class WakeTest(TempDataDir):
         self.assertEqual(L.WakeHistory(False).get(1)[0]["user"], "Alice")
 
 
+class CidrTest(TempDataDir):
+    def test_matcher(self):
+        m = L.IPMatcher("203.0.113.5, 198.51.100.0/24,not-an-ip, ")
+        self.assertIn("203.0.113.5", m)
+        self.assertIn("198.51.100.77", m)
+        self.assertNotIn("198.51.101.1", m)
+        self.assertNotIn("garbage", m)
+        self.assertEqual(m.entries(), ["203.0.113.5", "198.51.100.0/24"])
+
+    def test_allowlist_and_blocklist_accept_ranges(self):
+        self.assertTrue(L.IPAllowlist(True, "73.15.0.0/16").is_allowed(PUBLIC_IP))
+        self.assertFalse(L.IPAllowlist(True, "73.16.0.0/16").is_allowed(PUBLIC_IP))
+        self.assertTrue(L.IPBlocklist(True, "73.0.0.0/8").is_blocked(PUBLIC_IP))
+        self.assertFalse(L.IPBlocklist(False, "73.0.0.0/8").is_blocked(PUBLIC_IP))
+
+    def test_nowake_range_and_exclusion(self):
+        nowake = L.NoWakeList(True, "44.207.0.0/16", exclude_str="44.207.218.81")
+        self.assertTrue(nowake.should_skip_wol("44.207.1.1"))
+        self.assertFalse(nowake.should_skip_wol("44.207.218.81"))  # exclusion wins
+        self.assertFalse(nowake.should_skip_wol(PUBLIC_IP))
+        self.assertFalse(nowake.learn("44.207.9.9"))  # already covered by the range
+
+    def test_learn_skips_non_global(self):
+        nowake = L.NoWakeList(True, "")
+        self.assertFalse(nowake.learn("100.64.1.1"))  # CGNAT / Tailscale
+        self.assertFalse(nowake.learn("192.168.1.10"))
+        self.assertTrue(nowake.learn(PUBLIC_IP))
+
+
 class FakeReader:
     """Stands in for a maxminddb reader."""
 

@@ -604,14 +604,52 @@ class GeoIPChecker:
 
 
 # ---------------------------------------------------------------------------
+# IP / CIDR matching
+# ---------------------------------------------------------------------------
+class IPMatcher:
+    """Matches IPs against a comma-separated list of addresses and CIDR ranges
+    (e.g. "203.0.113.5,198.51.100.0/24"). Supports `ip in matcher`."""
+
+    def __init__(self, entries_str, name="list"):
+        self.ips = set()
+        self.networks = []
+        invalid = []
+        for entry in (entries_str or "").split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            try:
+                if "/" in entry:
+                    self.networks.append(ipaddress.ip_network(entry, strict=False))
+                else:
+                    self.ips.add(str(ipaddress.ip_address(entry)))
+            except ValueError:
+                invalid.append(entry)
+        if invalid:
+            log(f"WARNING: {name}: ignoring invalid IP/CIDR entries: {', '.join(invalid)}")
+
+    def __contains__(self, ip_str):
+        if ip_str in self.ips:
+            return True
+        if not self.networks:
+            return False
+        try:
+            addr = ipaddress.ip_address(ip_str)
+        except ValueError:
+            return False
+        return any(addr in net for net in self.networks)
+
+    def entries(self):
+        return sorted(self.ips) + [str(net) for net in self.networks]
+
+
+# ---------------------------------------------------------------------------
 # IP Allowlist
 # ---------------------------------------------------------------------------
 class IPAllowlist:
     def __init__(self, enabled, allowlist_str):
         self.enabled = enabled
-        self.allowed = set()
-        if allowlist_str:
-            self.allowed = {ip.strip() for ip in allowlist_str.split(",") if ip.strip()}
+        self.allowed = IPMatcher(allowlist_str, "ip_allowlist")
 
     def is_allowed(self, ip_str):
         if not self.enabled:
@@ -628,9 +666,7 @@ class IPAllowlist:
 class IPBlocklist:
     def __init__(self, enabled, blocklist_str):
         self.enabled = enabled
-        self.blocked = set()
-        if blocklist_str:
-            self.blocked = {ip.strip() for ip in blocklist_str.split(",") if ip.strip()}
+        self.blocked = IPMatcher(blocklist_str, "ip_blocklist")
 
     def is_blocked(self, ip_str):
         if not self.enabled:
@@ -652,31 +688,12 @@ class NoWakeList:
     def __init__(self, enabled, nowake_str, auto_discover=False, admin_token="",
                  exclude_str="", rediscover_hours=6):
         self.enabled = enabled
-        self.ips = set()
-        self.exclude_entries = []  # raw strings for CIDR + IP matching
-        self.exclude_networks = []  # parsed CIDR networks
-        self.exclude_ips = set()  # parsed single IPs
+        self.ips = set()  # learned and auto-discovered single IPs
+        self.manual = IPMatcher(nowake_str, "nowake_list")  # IPs and CIDR ranges
+        self.exclude = IPMatcher(exclude_str, "allow_ip_plex_relay")  # overrides everything above
         self.admin_token = admin_token
         self.auto_discover = auto_discover
         self.lock = threading.Lock()
-
-        if nowake_str:
-            self.ips = {ip.strip() for ip in nowake_str.split(",") if ip.strip()}
-
-        # Parse exclude list — supports both IPs and CIDR
-        if exclude_str:
-            for entry in exclude_str.split(","):
-                entry = entry.strip()
-                if not entry:
-                    continue
-                self.exclude_entries.append(entry)
-                try:
-                    if "/" in entry:
-                        self.exclude_networks.append(ipaddress.ip_network(entry, strict=False))
-                    else:
-                        self.exclude_ips.add(entry)
-                except Exception:
-                    self.exclude_ips.add(entry)
 
         # Load previously learned IPs
         self._load_learned()
@@ -704,16 +721,7 @@ class NoWakeList:
 
     def _is_excluded(self, ip_str):
         """Check if an IP is in the exclusion list (exact or CIDR)."""
-        if ip_str in self.exclude_ips:
-            return True
-        try:
-            addr = ipaddress.ip_address(ip_str)
-            for net in self.exclude_networks:
-                if addr in net:
-                    return True
-        except Exception:
-            pass
-        return False
+        return ip_str in self.exclude
 
     def _apply_exclusions(self):
         """Remove excluded IPs from the no-wake list and from the learned file."""
@@ -787,13 +795,13 @@ class NoWakeList:
         """Learn a new no-wake IP. Returns True if newly added."""
         if not self.enabled:
             return False
-        if self._is_excluded(ip_str):
+        if self._is_excluded(ip_str) or ip_str in self.manual:
             return False
         try:
-            if ipaddress.ip_address(ip_str).is_private:
-                return False
-        except Exception:
-            pass
+            if not ipaddress.ip_address(ip_str).is_global:
+                return False  # local devices, CGNAT/Tailscale, etc. are never infrastructure
+        except ValueError:
+            return False
 
         with self.lock:
             if ip_str in self.ips:
@@ -845,14 +853,16 @@ class NoWakeList:
             log(f"No-wake auto-discover: failed to query plex.tv: {e}")
 
     def should_skip_wol(self, ip_str):
-        if not self.enabled:
+        if not self.enabled or self._is_excluded(ip_str):
             return False
+        if ip_str in self.manual:
+            return True
         with self.lock:
             return ip_str in self.ips
 
     def get_active_ips(self):
         with self.lock:
-            return sorted(self.ips)
+            return self.manual.entries() + sorted(self.ips - self.manual.ips)
 
 
 # ---------------------------------------------------------------------------
