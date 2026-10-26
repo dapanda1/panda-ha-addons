@@ -18,6 +18,7 @@ Features (all toggleable):
 - Auto-restart: s6 finish script with delay
 """
 
+import collections
 import ipaddress
 import json
 import logging
@@ -38,7 +39,8 @@ CONNECT_POLL_INTERVAL = 2
 SSH_KEY_PATH = "/data/plex_wol_key"
 LOG_FILE_PATH = "/data/plex_wol.log"
 
-HA_API = "http://supervisor/core/api"
+SUPERVISOR_URL = "http://supervisor"
+HA_API = f"{SUPERVISOR_URL}/core/api"
 SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN", "")
 
 
@@ -123,17 +125,99 @@ def ha_api_post(endpoint, payload):
         return False
 
 
-def ha_api_get(endpoint):
-    """GET from HA API. Returns parsed JSON or None."""
+def supervisor_request(path, payload=None, timeout=10):
+    """GET (no payload) or POST JSON to the Supervisor API. Returns the response's `data`."""
     if not SUPERVISOR_TOKEN:
-        return None
+        raise RuntimeError("no SUPERVISOR_TOKEN")
     headers = {"Authorization": f"Bearer {SUPERVISOR_TOKEN}"}
-    try:
-        req = urllib.request.Request(f"{HA_API}{endpoint}", headers=headers)
-        resp = urllib.request.urlopen(req, timeout=10)
-        return json.loads(resp.read().decode())
-    except Exception:
-        return None
+    data = None
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(payload).encode()
+    req = urllib.request.Request(f"{SUPERVISOR_URL}{path}", data=data, headers=headers,
+                                 method="POST" if payload is not None else "GET")
+    resp = urllib.request.urlopen(req, timeout=timeout)
+    body = resp.read().decode()
+    return (json.loads(body) if body else {}).get("data") or {}
+
+
+def update_addon_options(changes):
+    """Apply `changes` on top of the add-on's current saved options.
+
+    Reads the live options from /addons/self/info rather than /data/options.json,
+    which is only written at container start — posting that back would silently
+    undo any config the user has saved since. Returns True if anything changed.
+    """
+    current = supervisor_request("/addons/self/info").get("options", {})
+    if all(current.get(k) == v for k, v in changes.items()):
+        return False
+    current.update(changes)
+    supervisor_request("/addons/self/options", {"options": current}, timeout=30)
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Background worker for HA / Supervisor calls
+# ---------------------------------------------------------------------------
+class BackgroundWorker:
+    """Runs HA / Supervisor calls one at a time, off the connection path.
+
+    A job submitted with a key replaces any pending job with the same key (only
+    the latest state matters) and runs at most once per `min_interval` seconds.
+    Keyless jobs, like notifications, always run, in order, ahead of keyed ones.
+    """
+
+    def __init__(self):
+        self.cond = threading.Condition()
+        self.queue = collections.deque()
+        self.keyed = {}  # key -> (fn, min_interval)
+        self.last_run = {}  # key -> monotonic time
+        self.started = False
+
+    def start(self):
+        with self.cond:
+            if self.started:
+                return
+            self.started = True
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def submit(self, fn, key=None, min_interval=0):
+        with self.cond:
+            if key is None:
+                self.queue.append(fn)
+            else:
+                self.keyed[key] = (fn, min_interval)
+            self.cond.notify()
+
+    def _next_job(self):
+        """Pop the next runnable job. Returns (job, None) or (None, seconds until one is due)."""
+        if self.queue:
+            return self.queue.popleft(), None
+        now = time.monotonic()
+        wait = None
+        for key, (fn, min_interval) in self.keyed.items():
+            due = self.last_run.get(key, float("-inf")) + min_interval
+            if due <= now:
+                del self.keyed[key]
+                self.last_run[key] = now
+                return fn, None
+            wait = due - now if wait is None else min(wait, due - now)
+        return None, wait
+
+    def _run(self):
+        while True:
+            with self.cond:
+                job, wait = self._next_job()
+                while job is None:
+                    self.cond.wait(wait)
+                    job, wait = self._next_job()
+            try:
+                job()
+            except Exception as e:
+                log(f"WARNING: background task failed: {e}")
+
+
+ha_worker = BackgroundWorker()  # started in main()
 
 
 NOTIFY_TARGET = ""  # set from config in main()
@@ -148,13 +232,27 @@ def ha_notify(title, message, category=None):
     ha_api_post("/services/persistent_notification/create", {
         "title": title,
         "message": message,
-        "notification_id": "plex_wol_" + str(int(time.time())),
+        "notification_id": f"plex_wol_{time.time_ns()}",
     })
     if NOTIFY_TARGET:
         ha_api_post(f"/services/notify/{NOTIFY_TARGET}", {
             "title": title,
             "message": message,
         })
+
+
+def notify(title, message, category=None):
+    """Queue a notification without blocking the caller."""
+    if category and not NOTIFY_ENABLED.get(category, True):
+        return
+    ha_worker.submit(lambda: ha_notify(title, message, category))
+
+
+def post_state(entity_id, state, attributes=None, min_interval=0):
+    """Queue a sensor state update. Rapid updates to one entity collapse into the latest."""
+    payload = {"state": state, "attributes": attributes or {}}
+    ha_worker.submit(lambda: ha_api_post(f"/states/{entity_id}", payload),
+                     key=f"state:{entity_id}", min_interval=min_interval)
 
 
 # ---------------------------------------------------------------------------
@@ -170,13 +268,10 @@ class HASensors:
         self.server_status = "unknown"
         self.start_time = time.time()
 
-    def _post_state(self, entity_id, state, attributes=None):
+    def _post_state(self, entity_id, state, attributes=None, min_interval=0):
         if not self.enabled:
             return
-        ha_api_post(f"/states/{entity_id}", {
-            "state": state,
-            "attributes": attributes or {},
-        })
+        post_state(entity_id, state, attributes, min_interval)
 
     def set_server_status(self, status):
         self.server_status = status
@@ -206,7 +301,7 @@ class HASensors:
         self._post_state("sensor.plex_wol_connection_count", str(count), {
             "friendly_name": "Plex WoL Connection Count",
             "icon": "mdi:counter",
-        })
+        }, min_interval=5)
 
     def get_uptime(self):
         seconds = int(time.time() - self.start_time)
@@ -250,20 +345,17 @@ class ConnectionHistory:
             if current_day != self.today:
                 self.today = current_day
                 self.unique_ips = set()
+            is_new = ip_str not in self.unique_ips
             self.unique_ips.add(ip_str)
-            self._publish()
-
-    def _publish(self):
-        ip_list = sorted(self.unique_ips)
-        ha_api_post(f"/states/sensor.plex_wol_unique_ips_today", {
-            "state": str(len(ip_list)),
-            "attributes": {
+            data = {"date": self.today, "ips": sorted(self.unique_ips)} if is_new else None
+        if data:
+            # Throttled: the attribute carries the whole day's IP list
+            post_state("sensor.plex_wol_unique_ips_today", str(len(data["ips"])), {
                 "friendly_name": "Plex WoL Unique IPs Today",
                 "icon": "mdi:ip-network",
-                "date": self.today,
-                "ips": ip_list,
-            },
-        })
+                "date": data["date"],
+                "ips": data["ips"],
+            }, min_interval=30)
 
     def get_data(self):
         with self.lock:
@@ -499,13 +591,9 @@ class GeoIPChecker:
                 allowed = country in self.allowed
                 if not allowed:
                     log(f"GeoIP BLOCKED: {ip_str} is from {country} (allowed: {self.allowed})")
-                    threading.Thread(
-                        target=ha_notify,
-                        args=("Plex WoL: GeoIP blocked",
-                              f"Connection from {ip_str} blocked — country {country} not in allowed list.",
-                              "geoip_block"),
-                        daemon=True,
-                    ).start()
+                    notify("Plex WoL: GeoIP blocked",
+                           f"Connection from {ip_str} blocked — country {country} not in allowed list.",
+                           "geoip_block")
         except Exception as e:
             log(f"WARNING: GeoIP lookup failed for {ip_str}: {e} — allowing by default")
             allowed = True
@@ -632,24 +720,20 @@ class NoWakeList:
         """Remove excluded IPs from the no-wake list and from the learned file."""
         with self.lock:
             removed = {ip for ip in self.ips if self._is_excluded(ip)}
-            if removed:
-                self.ips -= removed
-                log(f"Allow wake override: removed {sorted(removed)} from no-wake list")
+            if not removed:
+                return
+            self.ips -= removed
+            log(f"Allow wake override: removed {sorted(removed)} from no-wake list")
 
-        # Also clean excluded IPs from the learned file
-        if removed:
+            # Also clean excluded IPs from the learned file
             try:
-                with open(self.LEARNED_FILE, "r") as f:
-                    data = json.load(f)
-                    learned = set(data.get("ips", []))
+                learned = self._read_learned_file()
                 cleaned = learned - removed
                 if cleaned != learned:
                     self._save_learned(cleaned)
                     log(f"Allow wake override: cleaned {len(learned - cleaned)} excluded IPs from learned file")
-            except FileNotFoundError:
-                pass
-            except Exception:
-                pass
+            except Exception as e:
+                log(f"Allow wake override: failed to clean learned file: {e}")
 
     def _load_learned(self):
         """Load learned no-wake IPs from persistent file."""
@@ -665,55 +749,40 @@ class NoWakeList:
         except Exception as e:
             log(f"No-wake learned: failed to load {self.LEARNED_FILE}: {e}")
 
+    def _read_learned_file(self):
+        try:
+            with open(self.LEARNED_FILE, "r") as f:
+                return set(json.load(f).get("ips", []))
+        except FileNotFoundError:
+            return set()
+
     def _save_learned(self, learned_ips):
-        """Save learned no-wake IPs to persistent file and sync to config UI."""
+        """Save learned no-wake IPs to persistent file and queue a sync to the config UI."""
         try:
             with open(self.LEARNED_FILE, "w") as f:
                 json.dump({"ips": sorted(learned_ips), "updated": time.strftime("%Y-%m-%d %H:%M:%S")}, f, indent=2)
         except Exception as e:
             log(f"No-wake learned: failed to save: {e}")
-        self._sync_to_config(learned_ips)
+        self._request_config_sync()
 
-    def _sync_to_config(self, learned_ips):
+    def _request_config_sync(self):
+        # At most once a minute: each sync rewrites the add-on's whole config
+        ha_worker.submit(self._sync_to_config, key="config:learned_nowake_ips", min_interval=60)
+
+    def _sync_to_config(self):
         """Write learned IPs to the Supervisor config so they're visible in the UI."""
         if not SUPERVISOR_TOKEN:
             return
         try:
-            # Read current config from local file
-            with open(OPTIONS_PATH, "r") as f:
-                opts = json.load(f)
-
-            # Update learned field
-            opts["learned_nowake_ips"] = ",".join(sorted(learned_ips))
-
-            # Write back to Supervisor
-            payload = json.dumps({"options": opts}).encode()
-            req = urllib.request.Request(
-                "http://supervisor/addons/self/options",
-                data=payload,
-                headers={
-                    "Authorization": f"Bearer {SUPERVISOR_TOKEN}",
-                    "Content-Type": "application/json",
-                },
-                method="POST",
-            )
-            urllib.request.urlopen(req, timeout=10)
+            with self.lock:
+                learned = self._read_learned_file()
+            update_addon_options({"learned_nowake_ips": ",".join(sorted(learned))})
         except Exception as e:
             log(f"No-wake learned: failed to sync to config: {e}")
 
     def _startup_sync(self):
-        """On startup, sync learned IPs from file to the config UI."""
-        try:
-            with open(self.LEARNED_FILE, "r") as f:
-                data = json.load(f)
-                learned = set(data.get("ips", []))
-            if learned:
-                self._sync_to_config(learned)
-        except FileNotFoundError:
-            # No learned file yet — clear the config field
-            self._sync_to_config(set())
-        except Exception:
-            pass
+        """On startup, sync learned IPs from file to the config UI (clearing it if none)."""
+        self._request_config_sync()
 
     def learn(self, ip_str):
         """Learn a new no-wake IP. Returns True if newly added."""
@@ -735,9 +804,7 @@ class NoWakeList:
 
             # Load existing, merge, save
             try:
-                with open(self.LEARNED_FILE, "r") as f:
-                    data = json.load(f)
-                    existing = set(data.get("ips", []))
+                existing = self._read_learned_file()
             except Exception:
                 existing = set()
             existing.add(ip_str)
@@ -823,11 +890,7 @@ class FloodDetector:
                 msg = (f"{count} connections on port 32400 in the last "
                        f"{self.window}s. Latest from {addr[0]}.")
                 log(f"ALERT: {msg}")
-                threading.Thread(
-                    target=ha_notify,
-                    args=("Plex WoL: Connection flood", msg, "flood"),
-                    daemon=True,
-                ).start()
+                notify("Plex WoL: Connection flood", msg, "flood")
 
 
 # ---------------------------------------------------------------------------
@@ -1027,13 +1090,9 @@ class SleepTrigger:
             if result.returncode == 0:
                 log("Sleep trigger: sleep command sent successfully")
                 self.sleeping = True
-                threading.Thread(
-                    target=ha_notify,
-                    args=("Plex WoL: Server sleeping",
-                          f"Plex server {self.server_ip} put to sleep after idle timeout.",
-                          "server_slept"),
-                    daemon=True,
-                ).start()
+                notify("Plex WoL: Server sleeping",
+                       f"Plex server {self.server_ip} put to sleep after idle timeout.",
+                       "server_slept")
             else:
                 stderr = result.stderr.decode().strip()
                 log(f"Sleep trigger: SSH failed (rc={result.returncode}): {stderr}")
@@ -1584,11 +1643,7 @@ def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
                    f"{wake_timeout}s after WoL. Connection from {client_ip}{user_tag} dropped.")
             log(f"[{addr}]{user_tag} TIMEOUT: {msg}")
             sensors.set_server_status("timeout")
-            threading.Thread(
-                target=ha_notify,
-                args=("Plex WoL: Wake failed", msg, "wake_timeout"),
-                daemon=True,
-            ).start()
+            notify("Plex WoL: Wake failed", msg, "wake_timeout")
             client_sock.close()
             return
         log(f"[{addr}]{user_tag} Server is up — proxying.")
@@ -1603,11 +1658,8 @@ def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
                     display = get_friendly_name(wake_user, name_map)
                     log(f"[{addr}] Wake triggered by user: {display}")
                     sensors.set_last_wake(display)
-                    threading.Thread(
-                        target=ha_notify,
-                        args=("Plex WoL: Server woken", f"Server woken by {display} from {client_ip}", "server_woken"),
-                        daemon=True,
-                    ).start()
+                    notify("Plex WoL: Server woken", f"Server woken by {display} from {client_ip}",
+                           "server_woken")
             threading.Thread(target=_track_wake_user, daemon=True).start()
 
     try:
@@ -1667,47 +1719,37 @@ def main():
         "geoip_block": bool(opts.get("notify_geoip_block", False)),
     }
 
+    ha_worker.start()
+
     # --- Config dependency enforcement ---
-    config_changed = False
+    corrections = {}
 
     # Auto-discover requires no-wake list
     if opts.get("auto_discover_plex_relays") and not opts.get("enable_nowake_list"):
-        opts["enable_nowake_list"] = True
-        config_changed = True
+        corrections["enable_nowake_list"] = True
         log("Config: auto_discover_plex_relays requires enable_nowake_list — auto-enabled")
 
     # Auto-discover requires admin token
     if opts.get("auto_discover_plex_relays") and not opts.get("plex_admin_token"):
-        opts["auto_discover_plex_relays"] = False
-        config_changed = True
+        corrections["auto_discover_plex_relays"] = False
         log("Config: auto_discover_plex_relays requires plex_admin_token — auto-disabled")
 
     # User tracking requires admin token
     if opts.get("enable_user_tracking") and not opts.get("plex_admin_token"):
-        opts["enable_user_tracking"] = False
-        config_changed = True
+        corrections["enable_user_tracking"] = False
         log("Config: enable_user_tracking requires plex_admin_token — auto-disabled")
 
     # Sleep trigger requires SSH user
     if opts.get("enable_sleep_trigger") and not opts.get("server_ssh_user"):
-        opts["enable_sleep_trigger"] = False
-        config_changed = True
+        corrections["enable_sleep_trigger"] = False
         log("Config: enable_sleep_trigger requires server_ssh_user — auto-disabled")
 
+    opts.update(corrections)
+
     # Persist corrected config to Supervisor so UI reflects changes
-    if config_changed and SUPERVISOR_TOKEN:
+    if corrections and SUPERVISOR_TOKEN:
         try:
-            payload = json.dumps({"options": opts}).encode()
-            req = urllib.request.Request(
-                "http://supervisor/addons/self/options",
-                data=payload,
-                headers={
-                    "Authorization": f"Bearer {SUPERVISOR_TOKEN}",
-                    "Content-Type": "application/json",
-                },
-                method="POST",
-            )
-            urllib.request.urlopen(req, timeout=30)
+            update_addon_options(corrections)
             log("Config: corrected settings saved to Supervisor")
         except Exception as e:
             log(f"Config: WARNING — failed to save corrected settings: {e}")

@@ -203,6 +203,141 @@ class ProxyDataTest(unittest.TestCase):
         upstream_side.close()
 
 
+class FakeSupervisor:
+    """A local stand-in for the Supervisor API: /addons/self/info and /addons/self/options."""
+
+    def __init__(self, options):
+        import http.server
+        import json as _json
+        fake = self
+        self.options = options
+        self.posted = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def _reply(self, data):
+                body = _json.dumps({"result": "ok", "data": data}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):
+                self._reply({"options": dict(fake.options)} if self.path == "/addons/self/info" else {})
+
+            def do_POST(self):
+                payload = _json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                fake.posted.append((self.path, payload))
+                if self.path == "/addons/self/options":
+                    fake.options = payload["options"]
+                self._reply({})
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.server.server_port}"
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+class ConfigSyncTest(TempDataDir):
+    """Bug: syncing learned IPs posted back /data/options.json, which is only
+    written at container start, silently undoing config saved since."""
+
+    def setUp(self):
+        super().setUp()
+        self.supervisor = FakeSupervisor({"plex_server_ip": "192.0.2.10", "ip_blocklist": "",
+                                          "learned_nowake_ips": ""})
+        self.addCleanup(self.supervisor.close)
+        for p in (mock.patch.object(L, "SUPERVISOR_URL", self.supervisor.url),
+                  mock.patch.object(L, "SUPERVISOR_TOKEN", "token"),
+                  mock.patch.object(L, "ha_worker", L.BackgroundWorker())):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_sync_keeps_config_saved_since_start(self):
+        with open(L.OPTIONS_PATH, "w") as f:  # what the container started with
+            f.write('{"plex_server_ip": "192.0.2.10", "ip_blocklist": ""}')
+        self.supervisor.options["ip_blocklist"] = "198.51.100.9"  # user saved this later
+        nowake = L.NoWakeList(True, "")
+        nowake.learn(PUBLIC_IP)
+        nowake._sync_to_config()
+        self.assertEqual(self.supervisor.options["ip_blocklist"], "198.51.100.9")
+        self.assertEqual(self.supervisor.options["learned_nowake_ips"], PUBLIC_IP)
+
+    def test_learn_only_queues_the_sync(self):
+        nowake = L.NoWakeList(True, "")
+        self.supervisor.posted.clear()
+        self.assertTrue(nowake.learn(PUBLIC_IP))
+        self.assertEqual(self.supervisor.posted, [])  # nothing sent on the connection path
+        self.assertIn("config:learned_nowake_ips", L.ha_worker.keyed)
+
+    def test_unchanged_options_are_not_posted(self):
+        self.assertFalse(L.update_addon_options({"plex_server_ip": "192.0.2.10"}))
+        self.assertEqual(self.supervisor.posted, [])
+
+
+class BackgroundWorkerTest(unittest.TestCase):
+    def test_keyed_jobs_collapse_to_latest_and_keyless_all_run(self):
+        worker = L.BackgroundWorker()
+        ran = []
+        for i in range(5):
+            worker.submit(lambda i=i: ran.append(("state", i)), key="state:x")
+        worker.submit(lambda: ran.append("notify-1"))
+        worker.submit(lambda: ran.append("notify-2"))
+        done = threading.Event()
+        worker.submit(done.set, key="zz-last")
+        worker.start()
+        self.assertTrue(done.wait(5))
+        self.assertEqual(ran, ["notify-1", "notify-2", ("state", 4)])
+
+    def test_min_interval_spaces_out_runs(self):
+        worker = L.BackgroundWorker()
+        worker.start()
+        times = []
+        second = threading.Event()
+        worker.submit(lambda: times.append(time.monotonic()), key="k", min_interval=0.5)
+        time.sleep(0.1)
+        worker.submit(lambda: (times.append(time.monotonic()), second.set()), key="k", min_interval=0.5)
+        self.assertTrue(second.wait(5))
+        self.assertGreaterEqual(times[1] - times[0], 0.45)
+
+
+class MigrateTest(unittest.TestCase):
+    def setUp(self):
+        import migrate
+        self.migrate = migrate
+        p = mock.patch("builtins.print")
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_rename_moves_value(self):
+        opts = {"nowake_exclude": "34.0.0.0/8", "allow_ip_plex_relay": "", "enable_token_validation": True}
+        self.assertTrue(self.migrate.apply_field_map(opts))
+        self.assertEqual(opts, {"allow_ip_plex_relay": "34.0.0.0/8"})
+
+    def test_rename_keeps_value_already_set(self):
+        opts = {"nowake_exclude": "old", "allow_ip_plex_relay": "new"}
+        self.migrate.apply_field_map(opts)
+        self.assertEqual(opts, {"allow_ip_plex_relay": "new"})
+
+    def test_reads_saved_options_not_options_json(self):
+        supervisor = FakeSupervisor({"nowake_exclude": "34.0.0.0/8", "allow_ip_plex_relay": ""})
+        self.addCleanup(supervisor.close)
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        with mock.patch.object(self.migrate, "SUPERVISOR_URL", supervisor.url), \
+                mock.patch.object(self.migrate, "SUPERVISOR_TOKEN", "token"), \
+                mock.patch.object(self.migrate, "SCHEMA_VERSION_FILE", os.path.join(tmp, "v")):
+            self.migrate.migrate()
+        self.assertEqual(supervisor.options, {"allow_ip_plex_relay": "34.0.0.0/8"})
+        with open(os.path.join(tmp, "v")) as f:
+            self.assertEqual(f.read(), str(self.migrate.CURRENT_SCHEMA_VERSION))
+
+
 def free_port():
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
