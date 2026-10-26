@@ -3,6 +3,7 @@
 Run from the add-on directory:  python3 -m unittest discover -s tests
 """
 
+import json
 import os
 import shutil
 import socket
@@ -28,6 +29,8 @@ class TempDataDir(unittest.TestCase):
         patches = [
             mock.patch.object(L.NoWakeList, "LEARNED_FILE", os.path.join(self.tmp, "learned.json")),
             mock.patch.object(L.ToggleManager, "TOGGLES_FILE", os.path.join(self.tmp, "toggles.json")),
+            mock.patch.object(L.WakeHistory, "HISTORY_FILE", os.path.join(self.tmp, "wakes.json")),
+            mock.patch.object(L, "CONNECT_POLL_INTERVAL", 0.05),
             mock.patch.object(L, "OPTIONS_PATH", os.path.join(self.tmp, "options.json")),
             mock.patch.object(L, "log", lambda msg: None),
         ]
@@ -41,6 +44,7 @@ class TempDataDir(unittest.TestCase):
     def make_env(self, **overrides):
         """Build the full set of handler dependencies with everything optional turned off."""
         toggles = L.ToggleManager(True, False, True, False)
+        sensors = L.HASensors(False)
         env = {
             "opts": dict(L.load_options(), **{
                 "plex_server_ip": "127.0.0.1",
@@ -54,7 +58,7 @@ class TempDataDir(unittest.TestCase):
             "geoip": L.GeoIPChecker(False, "US", toggles),
             "allowlist": L.IPAllowlist(False, ""),
             "blocklist": L.IPBlocklist(False, ""),
-            "sensors": L.HASensors(False),
+            "sensors": sensors,
             "sleeper": None,
             "toggle_manager": toggles,
             "session_tracker": L.PlexSessionTracker(False, "", 0, ""),
@@ -62,6 +66,7 @@ class TempDataDir(unittest.TestCase):
             "burst_detector": L.BurstDetector(False, 3, 15),
             "nowake_list": L.NoWakeList(False, ""),
             "name_map": {},
+            "server_waiter": L.ServerWaiter("127.0.0.1", CLOSED_PORT, 1, sensors, L.WakeHistory(False)),
         }
         env.update(overrides)
         return env
@@ -201,6 +206,125 @@ class ProxyDataTest(unittest.TestCase):
         t.join(5)
         self.assertFalse(t.is_alive())
         upstream_side.close()
+
+
+class FakePlex:
+    """An HTTP server standing in for Plex. /identity answers with `identity_status`."""
+
+    def __init__(self, port=0, identity_status=200):
+        import http.server
+        fake = self
+        self.identity_status = identity_status
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                status = fake.identity_status if self.path == "/identity" else 404
+                body = b'{"MediaContainer": {}}'
+                self.send_response(status)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        http.server.ThreadingHTTPServer.allow_reuse_address = True
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
+        self.port = self.server.server_port
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+class ReadinessTest(unittest.TestCase):
+    def setUp(self):
+        p = mock.patch.object(L, "CONNECT_POLL_INTERVAL", 0.05)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_ready_when_identity_answers(self):
+        plex = FakePlex()
+        self.addCleanup(plex.close)
+        self.assertEqual(L.wait_until_ready("127.0.0.1", plex.port, 2), L.WAKE_READY)
+
+    def test_open_port_without_identity_is_unverified(self):
+        plex = FakePlex(identity_status=503)
+        self.addCleanup(plex.close)
+        self.assertEqual(L.wait_until_ready("127.0.0.1", plex.port, 0.3), L.WAKE_UNVERIFIED)
+
+    def test_refused_means_plex_not_running(self):
+        self.assertEqual(L.wait_until_ready("127.0.0.1", CLOSED_PORT, 0.2), L.WAKE_PLEX_NOT_RUNNING)
+
+    def test_no_answer_is_timeout(self):
+        with mock.patch.object(L, "probe_port", return_value="down"):
+            self.assertEqual(L.wait_until_ready("127.0.0.1", CLOSED_PORT, 0.2), L.WAKE_TIMEOUT)
+
+
+class WakeTest(TempDataDir):
+    def setUp(self):
+        super().setUp()
+        self.notes = []
+        p = mock.patch.object(L, "notify", lambda title, msg, cat=None: self.notes.append(title))
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_concurrent_clients_share_one_wake(self):
+        """Bug: every waiting client fired its own 'Wake failed' notification."""
+        env = self.make_env()
+        with mock.patch.object(L, "send_wol"):
+            threads = [threading.Thread(target=self.connect, args=(env, f"8.8.8.{i}")) for i in range(5)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(10)
+        self.assertEqual(self.notes, ["Plex WoL: Plex not running"])
+        history = env["server_waiter"].history.get()
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["outcome"], L.WAKE_PLEX_NOT_RUNNING)
+        self.assertTrue(history[0]["wol_sent"])
+
+    def test_server_coming_up_mid_wait_is_proxied_and_recorded(self):
+        port = free_port()
+        env = self.make_env()
+        env["opts"]["plex_server_port"] = port
+        env["server_waiter"] = L.ServerWaiter("127.0.0.1", port, 5, env["sensors"], L.WakeHistory(False))
+        plex = []
+        threading.Timer(0.3, lambda: plex.append(FakePlex(port))).start()
+        self.addCleanup(lambda: plex and plex[0].close())
+
+        client, peer = socket.socketpair()
+        with mock.patch.object(L, "send_wol"):
+            t = threading.Thread(target=L._handle_client_inner, args=(client, ("8.8.8.8", 1)), kwargs=env)
+            t.start()
+            peer.sendall(b"GET /identity HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+            reply = peer.recv(100)
+        peer.close()
+        t.join(5)
+        self.assertTrue(reply.startswith(b"HTTP/1.0 200") or reply.startswith(b"HTTP/1.1 200"), reply)
+        wake = env["server_waiter"].history.get()[0]
+        self.assertEqual(wake["outcome"], L.WAKE_READY)
+        self.assertIsNotNone(wake["seconds_to_ready"])
+        self.assertEqual(env["sensors"].server_status, "up")
+
+    def test_wol_disabled_sets_down_not_waking(self):
+        """Bug: status was set to 'waking' before the WoL-disabled check and stayed there."""
+        env = self.make_env()
+        env["toggle_manager"].set("wol", False)
+        self.connect(env, PUBLIC_IP)
+        self.assertEqual(env["sensors"].server_status, "down")
+        self.assertEqual(env["server_waiter"].history.get(), [])
+
+    def test_history_persists_and_is_capped(self):
+        with mock.patch.object(L.WakeHistory, "MAX_ENTRIES", 3):
+            history = L.WakeHistory(False)
+            for i in range(5):
+                history.add(trigger_ip=f"8.8.8.{i}", outcome=L.WAKE_READY)
+            reloaded = L.WakeHistory(False)
+        self.assertEqual([e["trigger_ip"] for e in reloaded.get()], ["8.8.8.4", "8.8.8.3", "8.8.8.2"])
+        reloaded.update(reloaded.get()[0]["id"], user="Alice")
+        self.assertEqual(L.WakeHistory(False).get(1)[0]["user"], "Alice")
 
 
 class FakeSupervisor:
@@ -348,9 +472,10 @@ class HealthEndpointTest(TempDataDir):
     def setUp(self):
         super().setUp()
         self.toggles = L.ToggleManager(True, True, False, False)
+        self.wakes = L.WakeHistory(False)
         self.port = free_port()
         L.start_health_check(True, self.port, L.HASensors(False), "127.0.0.1", CLOSED_PORT,
-                             L.ConnectionHistory(False), self.toggles)
+                             L.ConnectionHistory(False), self.toggles, self.wakes)
         deadline = time.time() + 2
         while time.time() < deadline:
             try:
@@ -389,6 +514,16 @@ class HealthEndpointTest(TempDataDir):
         status, _ = self.request("POST", "/toggle/wol/off", {"Origin": "https://evil.example"})
         self.assertEqual(status, 403)
         self.assertTrue(self.toggles.get_wol())
+
+    def test_history_endpoint(self):
+        self.wakes.add(trigger_ip="8.8.8.8", outcome=L.WAKE_READY)
+        self.wakes.add(trigger_ip="8.8.4.4", outcome=L.WAKE_TIMEOUT)
+        status, text = self.request("GET", "/history")
+        self.assertEqual(status, 200)
+        body = json.loads(text.split("\r\n\r\n", 1)[1])
+        self.assertEqual([w["trigger_ip"] for w in body["wakes"]], ["8.8.4.4", "8.8.8.8"])
+        _, text = self.request("GET", "/status")
+        self.assertIn('"last_wake_outcome": "timeout"', text)
 
     def test_no_wildcard_cors(self):
         status, text = self.request("GET", "/status?x=1")

@@ -27,6 +27,7 @@ import os
 import signal
 import selectors
 import socket
+import ssl
 import subprocess
 import threading
 import time
@@ -1135,7 +1136,8 @@ class SleepTrigger:
 # ---------------------------------------------------------------------------
 # Health check
 # ---------------------------------------------------------------------------
-def start_health_check(enabled, port, sensors, server_ip, server_port, conn_history, toggle_manager):
+def start_health_check(enabled, port, sensors, server_ip, server_port, conn_history, toggle_manager,
+                       wake_history):
     if not enabled:
         log("Health check: disabled")
         return
@@ -1202,11 +1204,16 @@ def start_health_check(enabled, port, sensors, server_ip, server_port, conn_hist
                     "connection_count": sensors.connection_count,
                     "last_wake": sensors.last_wake_time or "never",
                     "last_wake_user": sensors.last_wake_user or "unknown",
+                    "last_wake_outcome": (wake_history.get(1) or [{}])[0].get("outcome", "none"),
                     "unique_ips_today": history,
                     "toggles": toggle_manager.get_all(),
                     "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                 }
                 conn.sendall(json_response(200, "OK", status))
+
+            # GET /history — wake attempts, newest first
+            elif method == "GET" and parts == ["history"]:
+                conn.sendall(json_response(200, "OK", {"wakes": wake_history.get()}))
 
             # GET /toggles — toggle states only
             elif method == "GET" and parts == ["toggles"]:
@@ -1263,7 +1270,8 @@ def start_health_check(enabled, port, sensors, server_ip, server_port, conn_hist
             return
         srv.listen(10)
         log(f"Health check: listening on port {port}")
-        log(f"  Endpoints: GET /status, GET /toggles, POST /toggle/<name>, POST /toggle/<name>/on|off")
+        log(f"  Endpoints: GET /status, GET /history, GET /toggles, POST /toggle/<name>, "
+            f"POST /toggle/<name>/on|off")
         while True:
             conn, _ = srv.accept()
             threading.Thread(target=handle_request, args=(conn,), daemon=True).start()
@@ -1441,16 +1449,196 @@ def proxy_data(client_sock, upstream_sock):
                 pass
 
 
-def wait_for_server(ip, port, timeout):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+# ---------------------------------------------------------------------------
+# Waking: readiness check, shared waiter, history
+# ---------------------------------------------------------------------------
+# Wake outcomes
+WAKE_READY = "ready"  # Plex answered /identity
+WAKE_UNVERIFIED = "unverified"  # port open but /identity never answered; proxied anyway
+WAKE_PLEX_NOT_RUNNING = "plex_not_running"  # the PC answered but nothing listens on the Plex port
+WAKE_TIMEOUT = "timeout"  # no answer at all
+WAKE_PROXIED = (WAKE_READY, WAKE_UNVERIFIED)
+
+_insecure_ssl = ssl.create_default_context()
+_insecure_ssl.check_hostname = False  # the plex.direct cert won't match a LAN IP
+_insecure_ssl.verify_mode = ssl.CERT_NONE
+# LAN requests must never go through an HTTP(S)_PROXY from the environment
+_lan_opener = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=_insecure_ssl))
+
+
+def probe_port(ip, port, timeout=2):
+    """'open', 'refused' (the host is awake but nothing is listening) or 'down' (no answer)."""
+    try:
+        socket.create_connection((ip, port), timeout=timeout).close()
+        return "open"
+    except ConnectionRefusedError:
+        return "refused"
+    except OSError:
+        return "down"
+
+
+def plex_identity_ok(ip, port, timeout=3):
+    """True once Plex itself answers, not just its port: GET /identity returns 200."""
+    for scheme in ("https", "http"):
         try:
-            probe = socket.create_connection((ip, port), timeout=2)
-            probe.close()
-            return True
-        except (OSError, ConnectionRefusedError):
-            time.sleep(CONNECT_POLL_INTERVAL)
+            with _lan_opener.open(f"{scheme}://{ip}:{port}/identity", timeout=timeout) as resp:
+                if resp.status == 200:
+                    return True
+        except Exception:
+            continue
     return False
+
+
+def wait_until_ready(ip, port, timeout):
+    """Poll until Plex answers or `timeout` passes. Returns a WAKE_* outcome."""
+    deadline = time.time() + timeout
+    while True:
+        state = probe_port(ip, port)
+        if state == "open" and plex_identity_ok(ip, port):
+            return WAKE_READY
+        if time.time() >= deadline:
+            return {"open": WAKE_UNVERIFIED, "refused": WAKE_PLEX_NOT_RUNNING}.get(state, WAKE_TIMEOUT)
+        time.sleep(CONNECT_POLL_INTERVAL)
+
+
+class WakeHistory:
+    """Persisted record of wake attempts, newest last, exposed via /history and a sensor."""
+
+    HISTORY_FILE = "/data/wake_history.json"
+    MAX_ENTRIES = 100
+    SENSOR_ENTRIES = 5
+
+    def __init__(self, publish):
+        self.publish_enabled = publish
+        self.lock = threading.Lock()
+        self.entries = []
+        try:
+            with open(self.HISTORY_FILE, "r") as f:
+                self.entries = json.load(f).get("wakes", [])[-self.MAX_ENTRIES:]
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            log(f"Wake history: failed to load {self.HISTORY_FILE}: {e}")
+        self._publish()
+
+    def add(self, **fields):
+        """Record a wake attempt. Returns its id, for update()."""
+        with self.lock:
+            entry_id = (self.entries[-1]["id"] + 1) if self.entries else 1
+            self.entries.append(dict(fields, id=entry_id, time=time.strftime("%Y-%m-%d %H:%M:%S")))
+            del self.entries[:-self.MAX_ENTRIES]
+            self._save()
+        self._publish()
+        return entry_id
+
+    def update(self, entry_id, **fields):
+        with self.lock:
+            for entry in self.entries:
+                if entry["id"] == entry_id:
+                    entry.update(fields)
+                    self._save()
+                    break
+        self._publish()
+
+    def get(self, limit=None):
+        """Entries newest first."""
+        with self.lock:
+            entries = [dict(e) for e in reversed(self.entries)]
+        return entries[:limit] if limit else entries
+
+    def _save(self):
+        try:
+            with open(self.HISTORY_FILE, "w") as f:
+                json.dump({"wakes": self.entries}, f, indent=2)
+        except Exception as e:
+            log(f"Wake history: failed to save: {e}")
+
+    def _publish(self):
+        if not self.publish_enabled:
+            return
+        recent = self.get(self.SENSOR_ENTRIES)
+        today = time.strftime("%Y-%m-%d")
+        with self.lock:
+            wakes_today = sum(1 for e in self.entries if e["time"].startswith(today))
+        post_state("sensor.plex_wol_wake_history", recent[0]["outcome"] if recent else "none", {
+            "friendly_name": "Plex WoL Wake History",
+            "icon": "mdi:history",
+            "wakes_today": wakes_today,
+            "recent": recent,
+        })
+
+
+class ServerWaiter:
+    """Waits for the Plex server after a wake, shared by every client that's waiting.
+
+    The first client to wait starts a single probe loop; clients arriving while
+    it runs wait for that result instead of probing on their own. Only that
+    first wait reports the outcome: one status update, one notification, one
+    history entry per wake.
+    """
+
+    def __init__(self, server_ip, server_port, timeout, sensors, history):
+        self.server_ip = server_ip
+        self.server_port = server_port
+        self.timeout = timeout
+        self.sensors = sensors
+        self.history = history
+        self.lock = threading.Lock()
+        self.cycle = None  # the wake currently being waited on
+
+    def wait(self, trigger_ip, wol_sent):
+        """Block until the server is ready or the wake times out.
+
+        Returns (outcome, history entry id); the id is None for clients that
+        joined a wake another client was already waiting on.
+        """
+        with self.lock:
+            cycle = self.cycle
+            first = cycle is None
+            if first:
+                cycle = self.cycle = {"done": threading.Event(), "outcome": WAKE_TIMEOUT}
+        if not first:
+            cycle["done"].wait(self.timeout + 30)
+            return cycle["outcome"], None
+
+        started = time.time()
+        try:
+            cycle["outcome"] = wait_until_ready(self.server_ip, self.server_port, self.timeout)
+        finally:
+            with self.lock:
+                self.cycle = None
+            cycle["done"].set()
+        outcome = cycle["outcome"]
+        return outcome, self._report(outcome, trigger_ip, wol_sent, time.time() - started)
+
+    def _report(self, outcome, trigger_ip, wol_sent, elapsed):
+        server = f"{self.server_ip}:{self.server_port}"
+        if outcome == WAKE_READY:
+            log(f"Wake: Plex ready after {elapsed:.0f}s")
+        elif outcome == WAKE_UNVERIFIED:
+            log(f"Wake: WARNING — port {self.server_port} is open but Plex didn't answer "
+                f"/identity within {self.timeout}s; proxying anyway")
+        elif outcome == WAKE_PLEX_NOT_RUNNING:
+            msg = (f"The Plex server PC at {self.server_ip} is awake, but nothing answered on port "
+                   f"{self.server_port} within {self.timeout}s. Plex Media Server may not be running. "
+                   f"Connection from {trigger_ip} dropped.")
+            log(f"Wake: PLEX NOT RUNNING: {msg}")
+            notify("Plex WoL: Plex not running", msg, "wake_timeout")
+        else:
+            msg = (f"Plex server {server} did not respond within {self.timeout}s"
+                   f"{' after WoL' if wol_sent else ''}. Connection from {trigger_ip} dropped.")
+            log(f"Wake: TIMEOUT: {msg}")
+            notify("Plex WoL: Wake failed", msg, "wake_timeout")
+
+        self.sensors.set_server_status("up" if outcome in WAKE_PROXIED else outcome)
+        return self.history.add(
+            trigger_ip=trigger_ip,
+            wol_sent=wol_sent,
+            outcome=outcome,
+            seconds_to_ready=round(elapsed, 1) if outcome in WAKE_PROXIED else None,
+            user=None,
+        )
 
 
 
@@ -1507,14 +1695,14 @@ def shutdown_handler(signum, frame):
 # ---------------------------------------------------------------------------
 def handle_client(client_sock, addr, opts, wol_state, flood, geoip, allowlist, blocklist,
                   sensors, sleeper, toggle_manager, session_tracker, conn_history, burst_detector,
-                  nowake_list, name_map):
+                  nowake_list, name_map, server_waiter):
     # Track connection
     connection_tracker.add(client_sock)
 
     try:
         _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
                              allowlist, blocklist, sensors, sleeper, toggle_manager, session_tracker,
-                             conn_history, burst_detector, nowake_list, name_map)
+                             conn_history, burst_detector, nowake_list, name_map, server_waiter)
     except Exception as e:
         log(f"[{addr}] ERROR handling connection: {e}")
     finally:
@@ -1524,7 +1712,7 @@ def handle_client(client_sock, addr, opts, wol_state, flood, geoip, allowlist, b
 
 def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
                          allowlist, blocklist, sensors, sleeper, toggle_manager, session_tracker,
-                         conn_history, burst_detector, nowake_list, name_map):
+                         conn_history, burst_detector, nowake_list, name_map, server_waiter):
     # Flood detection
     flood.record(addr)
 
@@ -1573,16 +1761,13 @@ def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
 
     user_tag = ""
 
-    # Check if the real server is already up
-    server_already_up = False
+    # Connect straight to the real server; failing that, it's down
     try:
-        probe = socket.create_connection((server_ip, server_port), timeout=2)
-        probe.close()
-        server_already_up = True
-    except (OSError, ConnectionRefusedError):
-        pass
+        upstream = socket.create_connection((server_ip, server_port), timeout=2)
+    except OSError:
+        upstream = None
 
-    if server_already_up:
+    if upstream:
         if not quiet:
             log(f"[{addr}]{user_tag} Server already up — proxying to {server_ip}:{server_port}")
         sensors.set_server_status("up")
@@ -1614,14 +1799,15 @@ def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
         wol_dashboard_enabled = toggle_manager.get_wol()
         wol_enabled = wol_config_enabled and wol_dashboard_enabled
 
-        sensors.set_server_status("waking")
         now = time.time()
+        wol_sent = False
         with wol_state["lock"]:
             elapsed = now - wol_state["last_wol"]
             if not wol_enabled:
                 reason = "config" if not wol_config_enabled else "dashboard toggle"
                 if wol_disabled_dedup.should_log(client_ip):
                     log(f"[{addr}]{user_tag} Server down — WoL disabled via {reason}, dropping connection (suppressing repeats for {wol_disabled_dedup.cooldown}s)")
+                sensors.set_server_status("down")
                 client_sock.close()
                 return
             elif target_mac and elapsed >= rate_limit:
@@ -1629,6 +1815,7 @@ def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
                 try:
                     send_wol(target_mac, broadcast)
                     wol_state["last_wol"] = now
+                    wol_sent = True
                     sensors.set_last_wake(None)
                 except Exception as e:
                     log(f"[{addr}]{user_tag} ERROR sending WoL: {e}")
@@ -1637,38 +1824,36 @@ def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
             else:
                 log(f"[{addr}]{user_tag} Server down — WoL rate-limited ({rate_limit - elapsed:.0f}s left)")
 
+        sensors.set_server_status("waking")
         log(f"[{addr}]{user_tag} Waiting up to {wake_timeout}s for server to come up…")
-        if not wait_for_server(server_ip, server_port, wake_timeout):
-            msg = (f"Plex server {server_ip} did not respond within "
-                   f"{wake_timeout}s after WoL. Connection from {client_ip}{user_tag} dropped.")
-            log(f"[{addr}]{user_tag} TIMEOUT: {msg}")
-            sensors.set_server_status("timeout")
-            notify("Plex WoL: Wake failed", msg, "wake_timeout")
+        outcome, history_id = server_waiter.wait(client_ip, wol_sent)
+        if outcome not in WAKE_PROXIED:
             client_sock.close()
             return
         log(f"[{addr}]{user_tag} Server is up — proxying.")
-        sensors.set_server_status("up")
         burst_detector.reset()
 
-        # Track who woke the server via session query
-        if session_tracker.enabled:
+        # Track who woke the server via session query (once per wake)
+        if history_id and session_tracker.enabled:
             def _track_wake_user():
                 wake_user = session_tracker.get_wake_user(delay=10)
                 if wake_user:
                     display = get_friendly_name(wake_user, name_map)
                     log(f"[{addr}] Wake triggered by user: {display}")
                     sensors.set_last_wake(display)
+                    server_waiter.history.update(history_id, user=display)
                     notify("Plex WoL: Server woken", f"Server woken by {display} from {client_ip}",
                            "server_woken")
             threading.Thread(target=_track_wake_user, daemon=True).start()
 
-    try:
-        upstream = socket.create_connection((server_ip, server_port), timeout=10)
-        upstream.settimeout(None)  # the connect timeout shouldn't apply to proxied reads/writes
-    except Exception as e:
-        log(f"[{addr}] Failed to connect to {server_ip}:{server_port}: {e}")
-        client_sock.close()
-        return
+        try:
+            upstream = socket.create_connection((server_ip, server_port), timeout=10)
+        except Exception as e:
+            log(f"[{addr}] Failed to connect to {server_ip}:{server_port}: {e}")
+            client_sock.close()
+            return
+
+    upstream.settimeout(None)  # the connect timeout shouldn't apply to proxied reads/writes
 
     connection_tracker.add(upstream)
 
@@ -1831,6 +2016,14 @@ def main():
 
     conn_history = ConnectionHistory(bool(opts.get("enable_ha_sensors", True)))
 
+    server_waiter = ServerWaiter(
+        server_ip=str(opts.get("plex_server_ip", "")),
+        server_port=int(opts.get("plex_server_port", 32400)),
+        timeout=int(opts.get("wake_timeout_seconds", 120)),
+        sensors=sensors,
+        history=WakeHistory(bool(opts.get("enable_ha_sensors", True))),
+    )
+
     session_tracker = PlexSessionTracker(
         enabled=bool(opts.get("enable_user_tracking", False)),
         server_ip=str(opts.get("plex_server_ip", "")),
@@ -1867,6 +2060,7 @@ def main():
         int(opts.get("plex_server_port", 32400)),
         conn_history,
         toggle_manager,
+        server_waiter.history,
     )
 
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -1885,7 +2079,7 @@ def main():
             target=handle_client,
             args=(client_sock, addr, opts, wol_state, flood, geoip, allowlist, blocklist,
                   sensors, sleeper, toggle_manager, session_tracker, conn_history, burst_detector,
-                  nowake_list, name_map),
+                  nowake_list, name_map, server_waiter),
             daemon=True,
         )
         t.start()
