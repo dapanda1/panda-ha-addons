@@ -17,6 +17,9 @@
 #        url: "http://localhost:32401/toggle/sleep"
 #        method: POST
 #
+#    For automations, /toggle/<name>/on and /toggle/<name>/off set a toggle
+#    explicitly instead of flipping it, e.g. "http://localhost:32401/toggle/wol/off".
+#
 # 2. Restart HA after editing configuration.yaml
 # 3. Add the card below to your Lovelace dashboard:
 #    - Go to your HA dashboard
@@ -49,6 +52,9 @@ cards:
       - entity: sensor.plex_wol_unique_ips_today
         name: Unique IPs Today
         icon: mdi:ip-network
+      - entity: sensor.plex_wol_wake_history
+        name: Last Wake Outcome
+        icon: mdi:history
 
   # Toggle controls (calls REST endpoint on health check port)
   - type: horizontal-stack

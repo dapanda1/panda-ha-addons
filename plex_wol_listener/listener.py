@@ -1,17 +1,21 @@
 """
-Plex WoL Proxy Add-on v4.0 for Home Assistant.
+Plex WoL Proxy Add-on for Home Assistant.
 
 Features (all toggleable):
 - TCP proxy: transparently relays Plex traffic
 - WoL: wakes sleeping Plex server on incoming connection
-- Plex token validation: rejects unauthenticated connections before waking server
-- GeoIP blocking: drops connections from non-allowed countries
-- IP allowlist: only allow specific IPs
+- Readiness check: waits for Plex itself (/identity) to answer, and tells
+  "PC didn't wake" apart from "PC woke but Plex isn't running"
+- Smart WoL: only wakes on a burst of connections from one IP; learns
+  single-probe IPs as infrastructure
+- GeoIP blocking: drops connections from non-allowed countries (offline DB-IP Lite)
+- IP allowlist / blocklist / no-wake list: IPs and CIDR ranges
 - Flood detection: alerts on connection spikes
 - Sleep trigger: puts server to sleep after idle period via SSH
-- HA sensors: server status, connection count, last wake, unique IPs today
-- HA dashboard toggles: input_boolean entities for GeoIP/quiet/sleep
-- Health check: JSON status endpoint
+- Wake history: persisted record of wake attempts
+- HA sensors: server status, connection count, last wake, unique IPs today, wake history
+- Dashboard toggles: WoL/GeoIP/quiet/sleep via the health check HTTP endpoint
+- Health check: JSON status and history endpoints
 - File logging: daily rotation with configurable retention
 - HA notifications: push + persistent on failures and alerts
 - Graceful shutdown: cleanly closes active connections on SIGTERM
@@ -34,7 +38,7 @@ import time
 import urllib.request
 
 OPTIONS_PATH = "/data/options.json"
-VERSION = "5.4.9"
+VERSION = "5.5.0"
 PROXY_BUF = 65536
 CONNECT_POLL_INTERVAL = 2
 SSH_KEY_PATH = "/data/plex_wol_key"
