@@ -1065,23 +1065,26 @@ def start_health_check(enabled, port, sensors, server_ip, server_port, conn_hist
             return False
 
     def parse_request(data):
-        """Parse raw HTTP request bytes into method and path."""
+        """Parse raw HTTP request bytes into method, path (no query) and lower-cased headers."""
         try:
-            request_line = data.split(b"\r\n")[0].decode()
-            parts = request_line.split(" ")
-            if len(parts) >= 2:
-                return parts[0], parts[1]
+            lines = data.split(b"\r\n\r\n", 1)[0].decode("latin-1").split("\r\n")
+            method, target = lines[0].split(" ")[:2]
+            headers = {}
+            for line in lines[1:]:
+                name, sep, value = line.partition(":")
+                if sep:
+                    headers[name.strip().lower()] = value.strip()
+            return method, target.split("?", 1)[0], headers
         except Exception:
-            pass
-        return "GET", "/"
+            return "", "", {}
 
     def json_response(status_code, status_text, body_dict):
         body = json.dumps(body_dict, indent=2)
         return (
             f"HTTP/1.1 {status_code} {status_text}\r\n"
             f"Content-Type: application/json\r\n"
-            f"Access-Control-Allow-Origin: *\r\n"
             f"Content-Length: {len(body)}\r\n"
+            f"Connection: close\r\n"
             f"\r\n{body}"
         ).encode()
 
@@ -1090,10 +1093,18 @@ def start_health_check(enabled, port, sensors, server_ip, server_port, conn_hist
             raw = conn.recv(4096)
             if not raw:
                 return
-            method, path = parse_request(raw)
+            method, path, headers = parse_request(raw)
+            parts = [p for p in path.split("/") if p]
+
+            # Browsers always send Origin on cross-site POSTs; HA's rest_command
+            # doesn't. Refusing them stops any web page from flipping toggles.
+            if method == "POST" and "origin" in headers:
+                conn.sendall(json_response(403, "Forbidden", {
+                    "error": "Browser requests are not allowed; use rest_command",
+                }))
 
             # GET / — full status
-            if method == "GET" and path in ("/", "/status"):
+            elif method == "GET" and parts in ([], ["status"]):
                 uptime_str, uptime_secs = sensors.get_uptime()
                 plex_reachable = check_server()
                 history = conn_history.get_data()
@@ -1114,12 +1125,12 @@ def start_health_check(enabled, port, sensors, server_ip, server_port, conn_hist
                 conn.sendall(json_response(200, "OK", status))
 
             # GET /toggles — toggle states only
-            elif method == "GET" and path == "/toggles":
+            elif method == "GET" and parts == ["toggles"]:
                 conn.sendall(json_response(200, "OK", toggle_manager.get_all()))
 
             # POST /toggle/<name> — flip a toggle
-            elif method == "POST" and path.startswith("/toggle/"):
-                name = path.split("/toggle/", 1)[1].strip("/")
+            elif method == "POST" and len(parts) == 2 and parts[0] == "toggle":
+                name = parts[1]
                 ok, new_val = toggle_manager.toggle(name)
                 if ok:
                     conn.sendall(json_response(200, "OK", {
@@ -1134,24 +1145,21 @@ def start_health_check(enabled, port, sensors, server_ip, server_port, conn_hist
                     }))
 
             # POST /toggle/<name>/on or /toggle/<name>/off — set explicitly
-            elif method == "POST" and ("/on" in path or "/off" in path):
-                parts = path.strip("/").split("/")
-                if len(parts) == 3 and parts[0] == "toggle":
-                    name = parts[1]
-                    value = parts[2] == "on"
-                    ok, new_val = toggle_manager.set(name, value)
-                    if ok:
-                        conn.sendall(json_response(200, "OK", {
-                            "set": name,
-                            "value": new_val,
-                            "all": toggle_manager.get_all(),
-                        }))
-                    else:
-                        conn.sendall(json_response(400, "Bad Request", {
-                            "error": f"Unknown toggle: {name}",
-                        }))
+            elif (method == "POST" and len(parts) == 3 and parts[0] == "toggle"
+                  and parts[2] in ("on", "off")):
+                name = parts[1]
+                ok, new_val = toggle_manager.set(name, parts[2] == "on")
+                if ok:
+                    conn.sendall(json_response(200, "OK", {
+                        "set": name,
+                        "value": new_val,
+                        "all": toggle_manager.get_all(),
+                    }))
                 else:
-                    conn.sendall(json_response(404, "Not Found", {"error": "Unknown endpoint"}))
+                    conn.sendall(json_response(400, "Bad Request", {
+                        "error": f"Unknown toggle: {name}",
+                        "valid": list(toggle_manager.get_all().keys()),
+                    }))
 
             else:
                 conn.sendall(json_response(404, "Not Found", {"error": "Unknown endpoint"}))

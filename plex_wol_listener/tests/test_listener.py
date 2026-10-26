@@ -114,5 +114,63 @@ class SmartWolLearningTest(TempDataDir):
         self.assertEqual(self.burst.pop_single_probes(), [])
 
 
+def free_port():
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+class HealthEndpointTest(TempDataDir):
+    def setUp(self):
+        super().setUp()
+        self.toggles = L.ToggleManager(True, True, False, False)
+        self.port = free_port()
+        L.start_health_check(True, self.port, L.HASensors(False), "127.0.0.1", CLOSED_PORT,
+                             L.ConnectionHistory(False), self.toggles)
+        deadline = time.time() + 2
+        while time.time() < deadline:
+            try:
+                socket.create_connection(("127.0.0.1", self.port), timeout=0.2).close()
+                break
+            except OSError:
+                time.sleep(0.05)
+
+    def request(self, method, path, headers=None):
+        """Send a raw request and return (status code, raw response text)."""
+        lines = [f"{method} {path} HTTP/1.1", "Host: localhost"]
+        lines += [f"{k}: {v}" for k, v in (headers or {}).items()]
+        with socket.create_connection(("127.0.0.1", self.port), timeout=5) as s:
+            s.sendall(("\r\n".join(lines) + "\r\n\r\n").encode())
+            data = b""
+            while chunk := s.recv(4096):
+                data += chunk
+        text = data.decode()
+        return int(text.split(" ")[1]), text
+
+    def test_explicit_on_off(self):
+        status, _ = self.request("POST", "/toggle/wol/off")
+        self.assertEqual(status, 200)
+        self.assertFalse(self.toggles.get_wol())
+        status, _ = self.request("POST", "/toggle/wol/on")
+        self.assertEqual(status, 200)
+        self.assertTrue(self.toggles.get_wol())
+
+    def test_flip_and_unknown(self):
+        self.assertEqual(self.request("POST", "/toggle/quiet")[0], 200)
+        self.assertTrue(self.toggles.get_quiet())
+        self.assertEqual(self.request("POST", "/toggle/nope")[0], 400)
+        self.assertEqual(self.request("POST", "/toggle/wol/maybe")[0], 404)
+
+    def test_browser_post_is_refused(self):
+        status, _ = self.request("POST", "/toggle/wol/off", {"Origin": "https://evil.example"})
+        self.assertEqual(status, 403)
+        self.assertTrue(self.toggles.get_wol())
+
+    def test_no_wildcard_cors(self):
+        status, text = self.request("GET", "/status?x=1")
+        self.assertEqual(status, 200)
+        self.assertNotIn("Access-Control-Allow-Origin", text)
+
+
 if __name__ == "__main__":
     unittest.main()
