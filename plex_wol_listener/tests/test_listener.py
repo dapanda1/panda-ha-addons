@@ -114,6 +114,36 @@ class SmartWolLearningTest(TempDataDir):
         self.assertEqual(self.burst.pop_single_probes(), [])
 
 
+class ToggleConfigTest(TempDataDir):
+    """Bug: once toggles.json existed, changing enable_geoip / enable_quiet_mode
+    in the add-on config had no effect."""
+
+    def test_dashboard_choice_survives_restart(self):
+        L.ToggleManager(True, True, False, False).set("geoip", False)
+        self.assertFalse(L.ToggleManager(True, True, False, False).get_geoip())
+
+    def test_config_change_overrides_dashboard_choice(self):
+        L.ToggleManager(True, True, False, False).set("geoip", False)
+        # User turns GeoIP off in config, restarts, then back on and restarts
+        self.assertFalse(L.ToggleManager(True, False, False, False).get_geoip())
+        self.assertTrue(L.ToggleManager(True, True, False, False).get_geoip())
+
+    def test_config_off_disables_geoip(self):
+        L.ToggleManager(True, True, False, False)  # first run writes the file
+        toggles = L.ToggleManager(True, False, False, False)
+        self.assertFalse(L.GeoIPChecker(False, "US", toggles).enabled)
+
+    def test_legacy_flat_file_keeps_dashboard_state(self):
+        with open(L.ToggleManager.TOGGLES_FILE, "w") as f:
+            f.write('{"wol": true, "geoip": false, "quiet": true, "sleep": false}')
+        toggles = L.ToggleManager(True, True, False, False)
+        self.assertFalse(toggles.get_geoip())
+        self.assertTrue(toggles.get_quiet())
+        # After the upgrade, config changes take effect: quiet config off -> on -> off
+        self.assertTrue(L.ToggleManager(True, True, True, False).get_quiet())
+        self.assertFalse(L.ToggleManager(True, True, False, False).get_quiet())
+
+
 def free_port():
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))

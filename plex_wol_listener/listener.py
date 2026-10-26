@@ -274,42 +274,67 @@ class ConnectionHistory:
 # HA Dashboard toggles
 # ---------------------------------------------------------------------------
 class ToggleManager:
-    """Manages feature toggles with file persistence. Controlled via health check HTTP endpoint."""
+    """Manages feature toggles with file persistence. Controlled via health check HTTP endpoint.
+
+    Each toggle starts from its config value. A dashboard change persists across
+    restarts until the matching config value is changed, at which point the new
+    config value wins. The file stores the config value each toggle was seeded
+    from so that change can be detected.
+    """
 
     TOGGLES_FILE = "/data/toggles.json"
 
     def __init__(self, initial_wol, initial_geoip, initial_quiet, initial_sleep):
-        self.enabled = True  # always available
         self.lock = threading.Lock()
-        self.state = {
-            "wol": initial_wol,
-            "geoip": initial_geoip,
-            "quiet": initial_quiet,
-            "sleep": initial_sleep,
+        self.config = {
+            "wol": bool(initial_wol),
+            "geoip": bool(initial_geoip),
+            "quiet": bool(initial_quiet),
+            "sleep": bool(initial_sleep),
         }
+        self.state = dict(self.config)
         self._load()
+        self._save()
         log(f"Toggles: wol={'ON' if self.state['wol'] else 'OFF'} "
             f"geoip={'ON' if self.state['geoip'] else 'OFF'} "
             f"quiet={'ON' if self.state['quiet'] else 'OFF'} "
             f"sleep={'ON' if self.state['sleep'] else 'OFF'}")
 
     def _load(self):
-        """Load saved toggle states. Only overrides if file exists."""
+        """Apply saved toggle states whose config value hasn't changed since they were saved."""
         try:
             with open(self.TOGGLES_FILE, "r") as f:
                 saved = json.load(f)
-                for key in self.state:
-                    if key in saved:
-                        self.state[key] = saved[key]
         except FileNotFoundError:
-            pass
+            return
         except Exception as e:
             log(f"Toggles: failed to load {self.TOGGLES_FILE}: {e}")
+            return
+
+        if "state" in saved:
+            saved_state = saved.get("state", {})
+            saved_config = saved.get("config", {})
+        else:
+            # Pre-5.5 flat format has no record of the config it came from, so
+            # keep the dashboard choices; config changes apply from now on.
+            saved_state, saved_config = saved, dict(self.config)
+
+        for key in self.state:
+            if key not in saved_state:
+                continue
+            if saved_config.get(key) == self.config[key]:
+                self.state[key] = bool(saved_state[key])
+            else:
+                log(f"Toggles: {key} config changed to {'ON' if self.config[key] else 'OFF'} "
+                    f"— overriding saved dashboard toggle")
+            if self.state[key] != self.config[key]:
+                log(f"Toggles: {key} is {'ON' if self.state[key] else 'OFF'} from the dashboard "
+                    f"(config says {'ON' if self.config[key] else 'OFF'})")
 
     def _save(self):
         try:
             with open(self.TOGGLES_FILE, "w") as f:
-                json.dump(self.state, f, indent=2)
+                json.dump({"state": self.state, "config": self.config}, f, indent=2)
         except Exception as e:
             log(f"Toggles: failed to save: {e}")
 
@@ -1399,8 +1424,7 @@ def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
     # Connection history
     conn_history.record(client_ip)
 
-    # Quiet mode — check toggle or config
-    quiet = toggle_manager.get_quiet() if toggle_manager.enabled else bool(opts.get("enable_quiet_mode", False))
+    quiet = toggle_manager.get_quiet()
 
     # IP blocklist check (before allowlist)
     if blocklist.is_blocked(client_ip):
@@ -1473,7 +1497,7 @@ def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
 
         # Check if WoL is enabled via config and dashboard toggle
         wol_config_enabled = bool(opts.get("enable_wol", True))
-        wol_dashboard_enabled = toggle_manager.get_wol() if toggle_manager.enabled else True
+        wol_dashboard_enabled = toggle_manager.get_wol()
         wol_enabled = wol_config_enabled and wol_dashboard_enabled
 
         sensors.set_server_status("waking")
