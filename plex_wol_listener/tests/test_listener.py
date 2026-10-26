@@ -327,6 +327,70 @@ class WakeTest(TempDataDir):
         self.assertEqual(L.WakeHistory(False).get(1)[0]["user"], "Alice")
 
 
+class FakeReader:
+    """Stands in for a maxminddb reader."""
+
+    def __init__(self, countries):
+        self.countries = countries
+
+    def get(self, ip):
+        country = self.countries.get(ip)
+        return {"country_code": country} if country else None
+
+
+class GeoIPTest(TempDataDir):
+    """Bug: ipapi.co lookups that failed (e.g. rate-limited) were cached as
+    'allowed' for 24h. Lookups are now local, so they can't fail that way."""
+
+    def setUp(self):
+        super().setUp()
+        self.notes = []
+        p = mock.patch.object(L, "notify", lambda title, msg, cat=None: self.notes.append(msg))
+        p.start()
+        self.addCleanup(p.stop)
+        self.toggles = L.ToggleManager(True, True, False, False)
+        self.geo = L.GeoIPChecker(True, "US, ca", self.toggles, db_path="/nonexistent")
+        self.geo.reader = FakeReader({"8.8.8.8": "US", "24.48.0.1": "CA", "1.1.1.1": "AU"})
+
+    def test_allowed_and_blocked_countries(self):
+        self.assertTrue(self.geo.is_allowed("8.8.8.8"))
+        self.assertTrue(self.geo.is_allowed("24.48.0.1"))
+        self.assertFalse(self.geo.is_allowed("1.1.1.1"))
+
+    def test_non_global_addresses_skip_lookup(self):
+        self.geo.reader = FakeReader({})  # would be "unknown" if looked up
+        for ip in ("192.168.1.5", "10.0.0.1", "100.64.1.1", "127.0.0.1"):
+            self.assertTrue(self.geo.is_allowed(ip), ip)
+
+    def test_unknown_country_is_allowed(self):
+        self.assertTrue(self.geo.is_allowed("9.9.9.9"))
+
+    def test_block_is_reported_once_per_ip(self):
+        for _ in range(3):
+            self.assertFalse(self.geo.is_allowed("1.1.1.1"))
+        self.assertEqual(len(self.notes), 1)
+
+    def test_missing_database_allows_everything(self):
+        geo = L.GeoIPChecker(True, "US", self.toggles, db_path="/nonexistent")
+        self.assertIsNone(geo.reader)
+        self.assertTrue(geo.is_allowed("1.1.1.1"))
+
+    def test_toggle_off_skips_check(self):
+        self.toggles.set("geoip", False)
+        self.assertTrue(self.geo.is_allowed("1.1.1.1"))
+
+
+@unittest.skipUnless(os.environ.get("GEOIP_TEST_DB"), "set GEOIP_TEST_DB to a dbip-country-ipv4.mmdb")
+class GeoIPDatabaseTest(TempDataDir):
+    def test_real_database(self):
+        geo = L.GeoIPChecker(True, "US", None, db_path=os.environ["GEOIP_TEST_DB"])
+        self.assertEqual(geo.country("8.8.8.8"), "US")
+        self.assertEqual(geo.country("1.1.1.1"), "AU")
+        with mock.patch.object(L, "notify"):
+            self.assertTrue(geo.is_allowed("8.8.8.8"))
+            self.assertFalse(geo.is_allowed("1.1.1.1"))
+
+
 class FakeSupervisor:
     """A local stand-in for the Supervisor API: /addons/self/info and /addons/self/options."""
 

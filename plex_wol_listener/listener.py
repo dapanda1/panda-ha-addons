@@ -539,17 +539,28 @@ class PlexSessionTracker:
 # ---------------------------------------------------------------------------
 # GeoIP
 # ---------------------------------------------------------------------------
-class GeoIPChecker:
-    CACHE_TTL = 86400  # 24 hours
+GEOIP_DB_PATH = "/usr/share/dbip/dbip-country-ipv4.mmdb"
 
-    def __init__(self, enabled, allowed_countries_str, toggle_manager=None):
+
+class GeoIPChecker:
+    """Country lookups against the bundled DB-IP Lite database: local, instant, no rate limits."""
+
+    def __init__(self, enabled, allowed_countries_str, toggle_manager=None, db_path=GEOIP_DB_PATH):
         self.base_enabled = enabled
         self.allowed = set()
         self.toggle_manager = toggle_manager
         if allowed_countries_str:
-            self.allowed = {c.strip().upper() for c in allowed_countries_str.split(",")}
-        self.cache = {}  # ip -> (allowed_bool, timestamp)
-        self.lock = threading.Lock()
+            self.allowed = {c.strip().upper() for c in allowed_countries_str.split(",") if c.strip()}
+        # Each blocked or unknown IP is logged (and notified) once a day, not per connection
+        self.reported = LogDedup(cooldown=86400)
+        self.reader = None
+        try:
+            import maxminddb
+            self.reader = maxminddb.open_database(db_path)
+            built = time.strftime("%Y-%m-%d", time.gmtime(self.reader.metadata().build_epoch))
+            log(f"GeoIP: using DB-IP Lite database built {built} (IP Geolocation by DB-IP, https://db-ip.com)")
+        except Exception as e:
+            log(f"GeoIP: ERROR — could not open {db_path}: {e}. GeoIP blocking is inactive.")
 
     @property
     def enabled(self):
@@ -557,52 +568,39 @@ class GeoIPChecker:
             return self.toggle_manager.get_geoip()
         return self.base_enabled
 
-    def is_private(self, ip_str):
+    def country(self, ip_str):
+        """ISO country code for a public IP, or None if unknown."""
+        if self.reader is None:
+            return None
         try:
-            return ipaddress.ip_address(ip_str).is_private
+            record = self.reader.get(ip_str)
         except Exception:
-            return False
-
-    def _prune_cache(self):
-        now = time.time()
-        self.cache = {k: (v, t) for k, (v, t) in self.cache.items()
-                      if now - t < self.CACHE_TTL}
+            return None
+        return ((record or {}).get("country_code") or "").upper() or None
 
     def is_allowed(self, ip_str):
-        if not self.enabled:
+        if not self.enabled or self.reader is None:
             return True
-        if self.is_private(ip_str):
-            return True
-
-        now = time.time()
-        with self.lock:
-            if ip_str in self.cache:
-                allowed, cached_at = self.cache[ip_str]
-                if now - cached_at < self.CACHE_TTL:
-                    return allowed
-
-        allowed = True
         try:
-            url = f"https://ipapi.co/{ip_str}/json/"
-            req = urllib.request.Request(url, headers={"User-Agent": "Plex-WoL-Listener"})
-            resp = urllib.request.urlopen(req, timeout=5)
-            result = json.loads(resp.read().decode())
-            if not result.get("error"):
-                country = result.get("country_code", "").upper()
-                allowed = country in self.allowed
-                if not allowed:
-                    log(f"GeoIP BLOCKED: {ip_str} is from {country} (allowed: {self.allowed})")
-                    notify("Plex WoL: GeoIP blocked",
-                           f"Connection from {ip_str} blocked — country {country} not in allowed list.",
-                           "geoip_block")
-        except Exception as e:
-            log(f"WARNING: GeoIP lookup failed for {ip_str}: {e} — allowing by default")
-            allowed = True
+            if not ipaddress.ip_address(ip_str).is_global:
+                return True  # LAN, loopback, CGNAT/Tailscale (100.64/10), etc.
+        except ValueError:
+            return True
 
-        with self.lock:
-            self.cache[ip_str] = (allowed, now)
-            self._prune_cache()
-        return allowed
+        country = self.country(ip_str)
+        if country is None:
+            if self.reported.should_log(ip_str):
+                log(f"GeoIP: no country on record for {ip_str} — allowing")
+            return True
+        if country in self.allowed:
+            return True
+
+        if self.reported.should_log(ip_str):
+            log(f"GeoIP BLOCKED: {ip_str} is from {country} (allowed: {sorted(self.allowed)})")
+            notify("Plex WoL: GeoIP blocked",
+                   f"Connection from {ip_str} blocked — country {country} not in allowed list.",
+                   "geoip_block")
+        return False
 
 
 # ---------------------------------------------------------------------------
