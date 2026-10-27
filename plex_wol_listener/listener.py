@@ -1,44 +1,51 @@
 """
-Plex WoL Proxy Add-on v4.0 for Home Assistant.
+Plex WoL Proxy Add-on for Home Assistant.
 
 Features (all toggleable):
 - TCP proxy: transparently relays Plex traffic
 - WoL: wakes sleeping Plex server on incoming connection
-- Plex token validation: rejects unauthenticated connections before waking server
-- GeoIP blocking: drops connections from non-allowed countries
-- IP allowlist: only allow specific IPs
+- Readiness check: waits for Plex itself (/identity) to answer, and tells
+  "PC didn't wake" apart from "PC woke but Plex isn't running"
+- Smart WoL: only wakes on a burst of connections from one IP; learns
+  single-probe IPs as infrastructure
+- GeoIP blocking: drops connections from non-allowed countries (offline DB-IP Lite)
+- IP allowlist / blocklist / no-wake list: IPs and CIDR ranges
 - Flood detection: alerts on connection spikes
 - Sleep trigger: puts server to sleep after idle period via SSH
-- HA sensors: server status, connection count, last wake, unique IPs today
-- HA dashboard toggles: input_boolean entities for GeoIP/quiet/sleep
-- Health check: JSON status endpoint
+- Wake history: persisted record of wake attempts
+- HA sensors: server status, connection count, last wake, unique IPs today, wake history
+- Dashboard toggles: WoL/GeoIP/quiet/sleep via the health check HTTP endpoint
+- Health check: JSON status and history endpoints
 - File logging: daily rotation with configurable retention
 - HA notifications: push + persistent on failures and alerts
 - Graceful shutdown: cleanly closes active connections on SIGTERM
 - Auto-restart: s6 finish script with delay
 """
 
+import collections
 import ipaddress
 import json
 import logging
 import logging.handlers
 import os
 import signal
+import selectors
 import socket
-import select
+import ssl
 import subprocess
 import threading
 import time
 import urllib.request
 
 OPTIONS_PATH = "/data/options.json"
-VERSION = "5.4.9"
+VERSION = "5.5.0"
 PROXY_BUF = 65536
 CONNECT_POLL_INTERVAL = 2
 SSH_KEY_PATH = "/data/plex_wol_key"
 LOG_FILE_PATH = "/data/plex_wol.log"
 
-HA_API = "http://supervisor/core/api"
+SUPERVISOR_URL = "http://supervisor"
+HA_API = f"{SUPERVISOR_URL}/core/api"
 SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN", "")
 
 
@@ -123,17 +130,99 @@ def ha_api_post(endpoint, payload):
         return False
 
 
-def ha_api_get(endpoint):
-    """GET from HA API. Returns parsed JSON or None."""
+def supervisor_request(path, payload=None, timeout=10):
+    """GET (no payload) or POST JSON to the Supervisor API. Returns the response's `data`."""
     if not SUPERVISOR_TOKEN:
-        return None
+        raise RuntimeError("no SUPERVISOR_TOKEN")
     headers = {"Authorization": f"Bearer {SUPERVISOR_TOKEN}"}
-    try:
-        req = urllib.request.Request(f"{HA_API}{endpoint}", headers=headers)
-        resp = urllib.request.urlopen(req, timeout=10)
-        return json.loads(resp.read().decode())
-    except Exception:
-        return None
+    data = None
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(payload).encode()
+    req = urllib.request.Request(f"{SUPERVISOR_URL}{path}", data=data, headers=headers,
+                                 method="POST" if payload is not None else "GET")
+    resp = urllib.request.urlopen(req, timeout=timeout)
+    body = resp.read().decode()
+    return (json.loads(body) if body else {}).get("data") or {}
+
+
+def update_addon_options(changes):
+    """Apply `changes` on top of the add-on's current saved options.
+
+    Reads the live options from /addons/self/info rather than /data/options.json,
+    which is only written at container start — posting that back would silently
+    undo any config the user has saved since. Returns True if anything changed.
+    """
+    current = supervisor_request("/addons/self/info").get("options", {})
+    if all(current.get(k) == v for k, v in changes.items()):
+        return False
+    current.update(changes)
+    supervisor_request("/addons/self/options", {"options": current}, timeout=30)
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Background worker for HA / Supervisor calls
+# ---------------------------------------------------------------------------
+class BackgroundWorker:
+    """Runs HA / Supervisor calls one at a time, off the connection path.
+
+    A job submitted with a key replaces any pending job with the same key (only
+    the latest state matters) and runs at most once per `min_interval` seconds.
+    Keyless jobs, like notifications, always run, in order, ahead of keyed ones.
+    """
+
+    def __init__(self):
+        self.cond = threading.Condition()
+        self.queue = collections.deque()
+        self.keyed = {}  # key -> (fn, min_interval)
+        self.last_run = {}  # key -> monotonic time
+        self.started = False
+
+    def start(self):
+        with self.cond:
+            if self.started:
+                return
+            self.started = True
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def submit(self, fn, key=None, min_interval=0):
+        with self.cond:
+            if key is None:
+                self.queue.append(fn)
+            else:
+                self.keyed[key] = (fn, min_interval)
+            self.cond.notify()
+
+    def _next_job(self):
+        """Pop the next runnable job. Returns (job, None) or (None, seconds until one is due)."""
+        if self.queue:
+            return self.queue.popleft(), None
+        now = time.monotonic()
+        wait = None
+        for key, (fn, min_interval) in self.keyed.items():
+            due = self.last_run.get(key, float("-inf")) + min_interval
+            if due <= now:
+                del self.keyed[key]
+                self.last_run[key] = now
+                return fn, None
+            wait = due - now if wait is None else min(wait, due - now)
+        return None, wait
+
+    def _run(self):
+        while True:
+            with self.cond:
+                job, wait = self._next_job()
+                while job is None:
+                    self.cond.wait(wait)
+                    job, wait = self._next_job()
+            try:
+                job()
+            except Exception as e:
+                log(f"WARNING: background task failed: {e}")
+
+
+ha_worker = BackgroundWorker()  # started in main()
 
 
 NOTIFY_TARGET = ""  # set from config in main()
@@ -148,13 +237,27 @@ def ha_notify(title, message, category=None):
     ha_api_post("/services/persistent_notification/create", {
         "title": title,
         "message": message,
-        "notification_id": "plex_wol_" + str(int(time.time())),
+        "notification_id": f"plex_wol_{time.time_ns()}",
     })
     if NOTIFY_TARGET:
         ha_api_post(f"/services/notify/{NOTIFY_TARGET}", {
             "title": title,
             "message": message,
         })
+
+
+def notify(title, message, category=None):
+    """Queue a notification without blocking the caller."""
+    if category and not NOTIFY_ENABLED.get(category, True):
+        return
+    ha_worker.submit(lambda: ha_notify(title, message, category))
+
+
+def post_state(entity_id, state, attributes=None, min_interval=0):
+    """Queue a sensor state update. Rapid updates to one entity collapse into the latest."""
+    payload = {"state": state, "attributes": attributes or {}}
+    ha_worker.submit(lambda: ha_api_post(f"/states/{entity_id}", payload),
+                     key=f"state:{entity_id}", min_interval=min_interval)
 
 
 # ---------------------------------------------------------------------------
@@ -170,13 +273,10 @@ class HASensors:
         self.server_status = "unknown"
         self.start_time = time.time()
 
-    def _post_state(self, entity_id, state, attributes=None):
+    def _post_state(self, entity_id, state, attributes=None, min_interval=0):
         if not self.enabled:
             return
-        ha_api_post(f"/states/{entity_id}", {
-            "state": state,
-            "attributes": attributes or {},
-        })
+        post_state(entity_id, state, attributes, min_interval)
 
     def set_server_status(self, status):
         self.server_status = status
@@ -206,7 +306,7 @@ class HASensors:
         self._post_state("sensor.plex_wol_connection_count", str(count), {
             "friendly_name": "Plex WoL Connection Count",
             "icon": "mdi:counter",
-        })
+        }, min_interval=5)
 
     def get_uptime(self):
         seconds = int(time.time() - self.start_time)
@@ -250,20 +350,17 @@ class ConnectionHistory:
             if current_day != self.today:
                 self.today = current_day
                 self.unique_ips = set()
+            is_new = ip_str not in self.unique_ips
             self.unique_ips.add(ip_str)
-            self._publish()
-
-    def _publish(self):
-        ip_list = sorted(self.unique_ips)
-        ha_api_post(f"/states/sensor.plex_wol_unique_ips_today", {
-            "state": str(len(ip_list)),
-            "attributes": {
+            data = {"date": self.today, "ips": sorted(self.unique_ips)} if is_new else None
+        if data:
+            # Throttled: the attribute carries the whole day's IP list
+            post_state("sensor.plex_wol_unique_ips_today", str(len(data["ips"])), {
                 "friendly_name": "Plex WoL Unique IPs Today",
                 "icon": "mdi:ip-network",
-                "date": self.today,
-                "ips": ip_list,
-            },
-        })
+                "date": data["date"],
+                "ips": data["ips"],
+            }, min_interval=30)
 
     def get_data(self):
         with self.lock:
@@ -274,42 +371,67 @@ class ConnectionHistory:
 # HA Dashboard toggles
 # ---------------------------------------------------------------------------
 class ToggleManager:
-    """Manages feature toggles with file persistence. Controlled via health check HTTP endpoint."""
+    """Manages feature toggles with file persistence. Controlled via health check HTTP endpoint.
+
+    Each toggle starts from its config value. A dashboard change persists across
+    restarts until the matching config value is changed, at which point the new
+    config value wins. The file stores the config value each toggle was seeded
+    from so that change can be detected.
+    """
 
     TOGGLES_FILE = "/data/toggles.json"
 
     def __init__(self, initial_wol, initial_geoip, initial_quiet, initial_sleep):
-        self.enabled = True  # always available
         self.lock = threading.Lock()
-        self.state = {
-            "wol": initial_wol,
-            "geoip": initial_geoip,
-            "quiet": initial_quiet,
-            "sleep": initial_sleep,
+        self.config = {
+            "wol": bool(initial_wol),
+            "geoip": bool(initial_geoip),
+            "quiet": bool(initial_quiet),
+            "sleep": bool(initial_sleep),
         }
+        self.state = dict(self.config)
         self._load()
+        self._save()
         log(f"Toggles: wol={'ON' if self.state['wol'] else 'OFF'} "
             f"geoip={'ON' if self.state['geoip'] else 'OFF'} "
             f"quiet={'ON' if self.state['quiet'] else 'OFF'} "
             f"sleep={'ON' if self.state['sleep'] else 'OFF'}")
 
     def _load(self):
-        """Load saved toggle states. Only overrides if file exists."""
+        """Apply saved toggle states whose config value hasn't changed since they were saved."""
         try:
             with open(self.TOGGLES_FILE, "r") as f:
                 saved = json.load(f)
-                for key in self.state:
-                    if key in saved:
-                        self.state[key] = saved[key]
         except FileNotFoundError:
-            pass
+            return
         except Exception as e:
             log(f"Toggles: failed to load {self.TOGGLES_FILE}: {e}")
+            return
+
+        if "state" in saved:
+            saved_state = saved.get("state", {})
+            saved_config = saved.get("config", {})
+        else:
+            # Pre-5.5 flat format has no record of the config it came from, so
+            # keep the dashboard choices; config changes apply from now on.
+            saved_state, saved_config = saved, dict(self.config)
+
+        for key in self.state:
+            if key not in saved_state:
+                continue
+            if saved_config.get(key) == self.config[key]:
+                self.state[key] = bool(saved_state[key])
+            else:
+                log(f"Toggles: {key} config changed to {'ON' if self.config[key] else 'OFF'} "
+                    f"— overriding saved dashboard toggle")
+            if self.state[key] != self.config[key]:
+                log(f"Toggles: {key} is {'ON' if self.state[key] else 'OFF'} from the dashboard "
+                    f"(config says {'ON' if self.config[key] else 'OFF'})")
 
     def _save(self):
         try:
             with open(self.TOGGLES_FILE, "w") as f:
-                json.dump(self.state, f, indent=2)
+                json.dump({"state": self.state, "config": self.config}, f, indent=2)
         except Exception as e:
             log(f"Toggles: failed to save: {e}")
 
@@ -421,17 +543,28 @@ class PlexSessionTracker:
 # ---------------------------------------------------------------------------
 # GeoIP
 # ---------------------------------------------------------------------------
-class GeoIPChecker:
-    CACHE_TTL = 86400  # 24 hours
+GEOIP_DB_PATH = "/usr/share/dbip/dbip-country-ipv4.mmdb"
 
-    def __init__(self, enabled, allowed_countries_str, toggle_manager=None):
+
+class GeoIPChecker:
+    """Country lookups against the bundled DB-IP Lite database: local, instant, no rate limits."""
+
+    def __init__(self, enabled, allowed_countries_str, toggle_manager=None, db_path=GEOIP_DB_PATH):
         self.base_enabled = enabled
         self.allowed = set()
         self.toggle_manager = toggle_manager
         if allowed_countries_str:
-            self.allowed = {c.strip().upper() for c in allowed_countries_str.split(",")}
-        self.cache = {}  # ip -> (allowed_bool, timestamp)
-        self.lock = threading.Lock()
+            self.allowed = {c.strip().upper() for c in allowed_countries_str.split(",") if c.strip()}
+        # Each blocked or unknown IP is logged (and notified) once a day, not per connection
+        self.reported = LogDedup(cooldown=86400)
+        self.reader = None
+        try:
+            import maxminddb
+            self.reader = maxminddb.open_database(db_path)
+            built = time.strftime("%Y-%m-%d", time.gmtime(self.reader.metadata().build_epoch))
+            log(f"GeoIP: using DB-IP Lite database built {built} (IP Geolocation by DB-IP, https://db-ip.com)")
+        except Exception as e:
+            log(f"GeoIP: ERROR — could not open {db_path}: {e}. GeoIP blocking is inactive.")
 
     @property
     def enabled(self):
@@ -439,56 +572,79 @@ class GeoIPChecker:
             return self.toggle_manager.get_geoip()
         return self.base_enabled
 
-    def is_private(self, ip_str):
+    def country(self, ip_str):
+        """ISO country code for a public IP, or None if unknown."""
+        if self.reader is None:
+            return None
         try:
-            return ipaddress.ip_address(ip_str).is_private
+            record = self.reader.get(ip_str)
         except Exception:
-            return False
-
-    def _prune_cache(self):
-        now = time.time()
-        self.cache = {k: (v, t) for k, (v, t) in self.cache.items()
-                      if now - t < self.CACHE_TTL}
+            return None
+        return ((record or {}).get("country_code") or "").upper() or None
 
     def is_allowed(self, ip_str):
-        if not self.enabled:
+        if not self.enabled or self.reader is None:
             return True
-        if self.is_private(ip_str):
-            return True
-
-        now = time.time()
-        with self.lock:
-            if ip_str in self.cache:
-                allowed, cached_at = self.cache[ip_str]
-                if now - cached_at < self.CACHE_TTL:
-                    return allowed
-
-        allowed = True
         try:
-            url = f"https://ipapi.co/{ip_str}/json/"
-            req = urllib.request.Request(url, headers={"User-Agent": "Plex-WoL-Listener"})
-            resp = urllib.request.urlopen(req, timeout=5)
-            result = json.loads(resp.read().decode())
-            if not result.get("error"):
-                country = result.get("country_code", "").upper()
-                allowed = country in self.allowed
-                if not allowed:
-                    log(f"GeoIP BLOCKED: {ip_str} is from {country} (allowed: {self.allowed})")
-                    threading.Thread(
-                        target=ha_notify,
-                        args=("Plex WoL: GeoIP blocked",
-                              f"Connection from {ip_str} blocked — country {country} not in allowed list.",
-                              "geoip_block"),
-                        daemon=True,
-                    ).start()
-        except Exception as e:
-            log(f"WARNING: GeoIP lookup failed for {ip_str}: {e} — allowing by default")
-            allowed = True
+            if not ipaddress.ip_address(ip_str).is_global:
+                return True  # LAN, loopback, CGNAT/Tailscale (100.64/10), etc.
+        except ValueError:
+            return True
 
-        with self.lock:
-            self.cache[ip_str] = (allowed, now)
-            self._prune_cache()
-        return allowed
+        country = self.country(ip_str)
+        if country is None:
+            if self.reported.should_log(ip_str):
+                log(f"GeoIP: no country on record for {ip_str} — allowing")
+            return True
+        if country in self.allowed:
+            return True
+
+        if self.reported.should_log(ip_str):
+            log(f"GeoIP BLOCKED: {ip_str} is from {country} (allowed: {sorted(self.allowed)})")
+            notify("Plex WoL: GeoIP blocked",
+                   f"Connection from {ip_str} blocked — country {country} not in allowed list.",
+                   "geoip_block")
+        return False
+
+
+# ---------------------------------------------------------------------------
+# IP / CIDR matching
+# ---------------------------------------------------------------------------
+class IPMatcher:
+    """Matches IPs against a comma-separated list of addresses and CIDR ranges
+    (e.g. "203.0.113.5,198.51.100.0/24"). Supports `ip in matcher`."""
+
+    def __init__(self, entries_str, name="list"):
+        self.ips = set()
+        self.networks = []
+        invalid = []
+        for entry in (entries_str or "").split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            try:
+                if "/" in entry:
+                    self.networks.append(ipaddress.ip_network(entry, strict=False))
+                else:
+                    self.ips.add(str(ipaddress.ip_address(entry)))
+            except ValueError:
+                invalid.append(entry)
+        if invalid:
+            log(f"WARNING: {name}: ignoring invalid IP/CIDR entries: {', '.join(invalid)}")
+
+    def __contains__(self, ip_str):
+        if ip_str in self.ips:
+            return True
+        if not self.networks:
+            return False
+        try:
+            addr = ipaddress.ip_address(ip_str)
+        except ValueError:
+            return False
+        return any(addr in net for net in self.networks)
+
+    def entries(self):
+        return sorted(self.ips) + [str(net) for net in self.networks]
 
 
 # ---------------------------------------------------------------------------
@@ -497,9 +653,7 @@ class GeoIPChecker:
 class IPAllowlist:
     def __init__(self, enabled, allowlist_str):
         self.enabled = enabled
-        self.allowed = set()
-        if allowlist_str:
-            self.allowed = {ip.strip() for ip in allowlist_str.split(",") if ip.strip()}
+        self.allowed = IPMatcher(allowlist_str, "ip_allowlist")
 
     def is_allowed(self, ip_str):
         if not self.enabled:
@@ -516,9 +670,7 @@ class IPAllowlist:
 class IPBlocklist:
     def __init__(self, enabled, blocklist_str):
         self.enabled = enabled
-        self.blocked = set()
-        if blocklist_str:
-            self.blocked = {ip.strip() for ip in blocklist_str.split(",") if ip.strip()}
+        self.blocked = IPMatcher(blocklist_str, "ip_blocklist")
 
     def is_blocked(self, ip_str):
         if not self.enabled:
@@ -540,31 +692,12 @@ class NoWakeList:
     def __init__(self, enabled, nowake_str, auto_discover=False, admin_token="",
                  exclude_str="", rediscover_hours=6):
         self.enabled = enabled
-        self.ips = set()
-        self.exclude_entries = []  # raw strings for CIDR + IP matching
-        self.exclude_networks = []  # parsed CIDR networks
-        self.exclude_ips = set()  # parsed single IPs
+        self.ips = set()  # learned and auto-discovered single IPs
+        self.manual = IPMatcher(nowake_str, "nowake_list")  # IPs and CIDR ranges
+        self.exclude = IPMatcher(exclude_str, "allow_ip_plex_relay")  # overrides everything above
         self.admin_token = admin_token
         self.auto_discover = auto_discover
         self.lock = threading.Lock()
-
-        if nowake_str:
-            self.ips = {ip.strip() for ip in nowake_str.split(",") if ip.strip()}
-
-        # Parse exclude list — supports both IPs and CIDR
-        if exclude_str:
-            for entry in exclude_str.split(","):
-                entry = entry.strip()
-                if not entry:
-                    continue
-                self.exclude_entries.append(entry)
-                try:
-                    if "/" in entry:
-                        self.exclude_networks.append(ipaddress.ip_network(entry, strict=False))
-                    else:
-                        self.exclude_ips.add(entry)
-                except Exception:
-                    self.exclude_ips.add(entry)
 
         # Load previously learned IPs
         self._load_learned()
@@ -592,39 +725,26 @@ class NoWakeList:
 
     def _is_excluded(self, ip_str):
         """Check if an IP is in the exclusion list (exact or CIDR)."""
-        if ip_str in self.exclude_ips:
-            return True
-        try:
-            addr = ipaddress.ip_address(ip_str)
-            for net in self.exclude_networks:
-                if addr in net:
-                    return True
-        except Exception:
-            pass
-        return False
+        return ip_str in self.exclude
 
     def _apply_exclusions(self):
         """Remove excluded IPs from the no-wake list and from the learned file."""
         with self.lock:
             removed = {ip for ip in self.ips if self._is_excluded(ip)}
-            if removed:
-                self.ips -= removed
-                log(f"Allow wake override: removed {sorted(removed)} from no-wake list")
+            if not removed:
+                return
+            self.ips -= removed
+            log(f"Allow wake override: removed {sorted(removed)} from no-wake list")
 
-        # Also clean excluded IPs from the learned file
-        if removed:
+            # Also clean excluded IPs from the learned file
             try:
-                with open(self.LEARNED_FILE, "r") as f:
-                    data = json.load(f)
-                    learned = set(data.get("ips", []))
+                learned = self._read_learned_file()
                 cleaned = learned - removed
                 if cleaned != learned:
                     self._save_learned(cleaned)
                     log(f"Allow wake override: cleaned {len(learned - cleaned)} excluded IPs from learned file")
-            except FileNotFoundError:
-                pass
-            except Exception:
-                pass
+            except Exception as e:
+                log(f"Allow wake override: failed to clean learned file: {e}")
 
     def _load_learned(self):
         """Load learned no-wake IPs from persistent file."""
@@ -640,67 +760,52 @@ class NoWakeList:
         except Exception as e:
             log(f"No-wake learned: failed to load {self.LEARNED_FILE}: {e}")
 
+    def _read_learned_file(self):
+        try:
+            with open(self.LEARNED_FILE, "r") as f:
+                return set(json.load(f).get("ips", []))
+        except FileNotFoundError:
+            return set()
+
     def _save_learned(self, learned_ips):
-        """Save learned no-wake IPs to persistent file and sync to config UI."""
+        """Save learned no-wake IPs to persistent file and queue a sync to the config UI."""
         try:
             with open(self.LEARNED_FILE, "w") as f:
                 json.dump({"ips": sorted(learned_ips), "updated": time.strftime("%Y-%m-%d %H:%M:%S")}, f, indent=2)
         except Exception as e:
             log(f"No-wake learned: failed to save: {e}")
-        self._sync_to_config(learned_ips)
+        self._request_config_sync()
 
-    def _sync_to_config(self, learned_ips):
+    def _request_config_sync(self):
+        # At most once a minute: each sync rewrites the add-on's whole config
+        ha_worker.submit(self._sync_to_config, key="config:learned_nowake_ips", min_interval=60)
+
+    def _sync_to_config(self):
         """Write learned IPs to the Supervisor config so they're visible in the UI."""
         if not SUPERVISOR_TOKEN:
             return
         try:
-            # Read current config from local file
-            with open(OPTIONS_PATH, "r") as f:
-                opts = json.load(f)
-
-            # Update learned field
-            opts["learned_nowake_ips"] = ",".join(sorted(learned_ips))
-
-            # Write back to Supervisor
-            payload = json.dumps({"options": opts}).encode()
-            req = urllib.request.Request(
-                "http://supervisor/addons/self/options",
-                data=payload,
-                headers={
-                    "Authorization": f"Bearer {SUPERVISOR_TOKEN}",
-                    "Content-Type": "application/json",
-                },
-                method="POST",
-            )
-            urllib.request.urlopen(req, timeout=10)
+            with self.lock:
+                learned = self._read_learned_file()
+            update_addon_options({"learned_nowake_ips": ",".join(sorted(learned))})
         except Exception as e:
             log(f"No-wake learned: failed to sync to config: {e}")
 
     def _startup_sync(self):
-        """On startup, sync learned IPs from file to the config UI."""
-        try:
-            with open(self.LEARNED_FILE, "r") as f:
-                data = json.load(f)
-                learned = set(data.get("ips", []))
-            if learned:
-                self._sync_to_config(learned)
-        except FileNotFoundError:
-            # No learned file yet — clear the config field
-            self._sync_to_config(set())
-        except Exception:
-            pass
+        """On startup, sync learned IPs from file to the config UI (clearing it if none)."""
+        self._request_config_sync()
 
     def learn(self, ip_str):
         """Learn a new no-wake IP. Returns True if newly added."""
         if not self.enabled:
             return False
-        if self._is_excluded(ip_str):
+        if self._is_excluded(ip_str) or ip_str in self.manual:
             return False
         try:
-            if ipaddress.ip_address(ip_str).is_private:
-                return False
-        except Exception:
-            pass
+            if not ipaddress.ip_address(ip_str).is_global:
+                return False  # local devices, CGNAT/Tailscale, etc. are never infrastructure
+        except ValueError:
+            return False
 
         with self.lock:
             if ip_str in self.ips:
@@ -710,9 +815,7 @@ class NoWakeList:
 
             # Load existing, merge, save
             try:
-                with open(self.LEARNED_FILE, "r") as f:
-                    data = json.load(f)
-                    existing = set(data.get("ips", []))
+                existing = self._read_learned_file()
             except Exception:
                 existing = set()
             existing.add(ip_str)
@@ -754,14 +857,16 @@ class NoWakeList:
             log(f"No-wake auto-discover: failed to query plex.tv: {e}")
 
     def should_skip_wol(self, ip_str):
-        if not self.enabled:
+        if not self.enabled or self._is_excluded(ip_str):
             return False
+        if ip_str in self.manual:
+            return True
         with self.lock:
             return ip_str in self.ips
 
     def get_active_ips(self):
         with self.lock:
-            return sorted(self.ips)
+            return self.manual.entries() + sorted(self.ips - self.manual.ips)
 
 
 # ---------------------------------------------------------------------------
@@ -798,38 +903,48 @@ class FloodDetector:
                 msg = (f"{count} connections on port 32400 in the last "
                        f"{self.window}s. Latest from {addr[0]}.")
                 log(f"ALERT: {msg}")
-                threading.Thread(
-                    target=ha_notify,
-                    args=("Plex WoL: Connection flood", msg, "flood"),
-                    daemon=True,
-                ).start()
+                notify("Plex WoL: Connection flood", msg, "flood")
 
 
 # ---------------------------------------------------------------------------
 # Burst detection for smart WoL
 # ---------------------------------------------------------------------------
 class BurstDetector:
-    """Tracks connection bursts to distinguish cold opens from background polls.
+    """Tracks per-IP connection bursts to distinguish cold opens from background polls.
 
-    A cold app open generates many connections in quick succession (loading
-    providers, hubs, libraries, thumbnails). A background poll is a single
-    connection every few minutes. When enabled, WoL is only sent if a burst
-    of connections is detected within the configured window.
+    A cold app open generates many connections from one IP in quick succession
+    (loading providers, hubs, libraries, thumbnails). A background poll is a
+    single connection every few minutes. When enabled, WoL is only sent once a
+    single IP reaches the burst count within the configured window.
+
+    An IP whose only connection in a window was a lone probe is reported by
+    pop_single_probes() after that window has passed, so it can be learned as
+    infrastructure. An IP that connects again within the window (i.e. the start
+    of a real cold open) is never reported.
     """
 
-    def __init__(self, enabled, burst_count, burst_window):
+    def __init__(self, enabled, burst_count, burst_window, wake_timeout=120):
         self.enabled = enabled
         self.burst_count = max(2, burst_count)
         self.burst_window = burst_window
-        self.timestamps = []
+        self.timestamps = {}  # ip -> connection times within the window
+        self.single_probes = {}  # ip -> time of a lone connection awaiting its window to pass
         self.lock = threading.Lock()
         # Once a burst triggers WoL, suppress further checks until
         # the server is confirmed up or the wake times out.
         self.wol_sent_recently = False
         self.wol_sent_time = 0.0
-        self.wol_sent_cooldown = 120  # match wake_timeout
+        self.wol_sent_cooldown = wake_timeout
 
-    def record_and_check(self):
+    def _prune(self, now):
+        for ip in list(self.timestamps):
+            recent = [t for t in self.timestamps[ip] if now - t < self.burst_window]
+            if recent:
+                self.timestamps[ip] = recent
+            else:
+                del self.timestamps[ip]
+
+    def record_and_check(self, ip_str):
         """Record a connection attempt while server is down.
         Returns True if burst threshold is met and WoL should be sent."""
         if not self.enabled:
@@ -840,31 +955,53 @@ class BurstDetector:
             # If we already sent WoL recently, allow through (so clients
             # can wait for the server alongside the first burst)
             if self.wol_sent_recently and (now - self.wol_sent_time) < self.wol_sent_cooldown:
+                self.single_probes.pop(ip_str, None)
                 return True
 
-            self.timestamps = [t for t in self.timestamps if now - t < self.burst_window]
-            self.timestamps.append(now)
-            count = len(self.timestamps)
+            self._prune(now)
+            stamps = self.timestamps.setdefault(ip_str, [])
+            stamps.append(now)
 
-            if count >= self.burst_count:
+            if len(stamps) == 1:
+                self.single_probes.setdefault(ip_str, now)
+            else:
+                self.single_probes.pop(ip_str, None)
+
+            if len(stamps) >= self.burst_count:
                 self.wol_sent_recently = True
                 self.wol_sent_time = now
                 return True
 
             return False
 
-    def reset(self):
-        """Reset burst state when server comes up."""
-        with self.lock:
-            self.timestamps = []
-            self.wol_sent_recently = False
-
-    def get_count(self):
-        """Get current connection count in window (for logging)."""
+    def pop_single_probes(self):
+        """Return IPs whose lone connection's window passed with no follow-up."""
+        if not self.enabled:
+            return []
         now = time.time()
         with self.lock:
-            self.timestamps = [t for t in self.timestamps if now - t < self.burst_window]
-            return len(self.timestamps)
+            expired = [ip for ip, t in self.single_probes.items() if now - t >= self.burst_window]
+            for ip in expired:
+                del self.single_probes[ip]
+        return expired
+
+    def reset(self):
+        """Reset burst state when server comes up.
+
+        Pending single probes are dropped too: once the server is up their
+        follow-up connections are no longer seen here, so they can't be judged.
+        """
+        with self.lock:
+            self.timestamps = {}
+            self.single_probes = {}
+            self.wol_sent_recently = False
+
+    def get_count(self, ip_str):
+        """Get current connection count in window for one IP (for logging)."""
+        now = time.time()
+        with self.lock:
+            self._prune(now)
+            return len(self.timestamps.get(ip_str, []))
 
 
 # ---------------------------------------------------------------------------
@@ -966,13 +1103,9 @@ class SleepTrigger:
             if result.returncode == 0:
                 log("Sleep trigger: sleep command sent successfully")
                 self.sleeping = True
-                threading.Thread(
-                    target=ha_notify,
-                    args=("Plex WoL: Server sleeping",
-                          f"Plex server {self.server_ip} put to sleep after idle timeout.",
-                          "server_slept"),
-                    daemon=True,
-                ).start()
+                notify("Plex WoL: Server sleeping",
+                       f"Plex server {self.server_ip} put to sleep after idle timeout.",
+                       "server_slept")
             else:
                 stderr = result.stderr.decode().strip()
                 log(f"Sleep trigger: SSH failed (rc={result.returncode}): {stderr}")
@@ -1015,7 +1148,8 @@ class SleepTrigger:
 # ---------------------------------------------------------------------------
 # Health check
 # ---------------------------------------------------------------------------
-def start_health_check(enabled, port, sensors, server_ip, server_port, conn_history, toggle_manager):
+def start_health_check(enabled, port, sensors, server_ip, server_port, conn_history, toggle_manager,
+                       wake_history):
     if not enabled:
         log("Health check: disabled")
         return
@@ -1029,23 +1163,26 @@ def start_health_check(enabled, port, sensors, server_ip, server_port, conn_hist
             return False
 
     def parse_request(data):
-        """Parse raw HTTP request bytes into method and path."""
+        """Parse raw HTTP request bytes into method, path (no query) and lower-cased headers."""
         try:
-            request_line = data.split(b"\r\n")[0].decode()
-            parts = request_line.split(" ")
-            if len(parts) >= 2:
-                return parts[0], parts[1]
+            lines = data.split(b"\r\n\r\n", 1)[0].decode("latin-1").split("\r\n")
+            method, target = lines[0].split(" ")[:2]
+            headers = {}
+            for line in lines[1:]:
+                name, sep, value = line.partition(":")
+                if sep:
+                    headers[name.strip().lower()] = value.strip()
+            return method, target.split("?", 1)[0], headers
         except Exception:
-            pass
-        return "GET", "/"
+            return "", "", {}
 
     def json_response(status_code, status_text, body_dict):
         body = json.dumps(body_dict, indent=2)
         return (
             f"HTTP/1.1 {status_code} {status_text}\r\n"
             f"Content-Type: application/json\r\n"
-            f"Access-Control-Allow-Origin: *\r\n"
             f"Content-Length: {len(body)}\r\n"
+            f"Connection: close\r\n"
             f"\r\n{body}"
         ).encode()
 
@@ -1054,10 +1191,18 @@ def start_health_check(enabled, port, sensors, server_ip, server_port, conn_hist
             raw = conn.recv(4096)
             if not raw:
                 return
-            method, path = parse_request(raw)
+            method, path, headers = parse_request(raw)
+            parts = [p for p in path.split("/") if p]
+
+            # Browsers always send Origin on cross-site POSTs; HA's rest_command
+            # doesn't. Refusing them stops any web page from flipping toggles.
+            if method == "POST" and "origin" in headers:
+                conn.sendall(json_response(403, "Forbidden", {
+                    "error": "Browser requests are not allowed; use rest_command",
+                }))
 
             # GET / — full status
-            if method == "GET" and path in ("/", "/status"):
+            elif method == "GET" and parts in ([], ["status"]):
                 uptime_str, uptime_secs = sensors.get_uptime()
                 plex_reachable = check_server()
                 history = conn_history.get_data()
@@ -1071,19 +1216,24 @@ def start_health_check(enabled, port, sensors, server_ip, server_port, conn_hist
                     "connection_count": sensors.connection_count,
                     "last_wake": sensors.last_wake_time or "never",
                     "last_wake_user": sensors.last_wake_user or "unknown",
+                    "last_wake_outcome": (wake_history.get(1) or [{}])[0].get("outcome", "none"),
                     "unique_ips_today": history,
                     "toggles": toggle_manager.get_all(),
                     "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                 }
                 conn.sendall(json_response(200, "OK", status))
 
+            # GET /history — wake attempts, newest first
+            elif method == "GET" and parts == ["history"]:
+                conn.sendall(json_response(200, "OK", {"wakes": wake_history.get()}))
+
             # GET /toggles — toggle states only
-            elif method == "GET" and path == "/toggles":
+            elif method == "GET" and parts == ["toggles"]:
                 conn.sendall(json_response(200, "OK", toggle_manager.get_all()))
 
             # POST /toggle/<name> — flip a toggle
-            elif method == "POST" and path.startswith("/toggle/"):
-                name = path.split("/toggle/", 1)[1].strip("/")
+            elif method == "POST" and len(parts) == 2 and parts[0] == "toggle":
+                name = parts[1]
                 ok, new_val = toggle_manager.toggle(name)
                 if ok:
                     conn.sendall(json_response(200, "OK", {
@@ -1098,24 +1248,21 @@ def start_health_check(enabled, port, sensors, server_ip, server_port, conn_hist
                     }))
 
             # POST /toggle/<name>/on or /toggle/<name>/off — set explicitly
-            elif method == "POST" and ("/on" in path or "/off" in path):
-                parts = path.strip("/").split("/")
-                if len(parts) == 3 and parts[0] == "toggle":
-                    name = parts[1]
-                    value = parts[2] == "on"
-                    ok, new_val = toggle_manager.set(name, value)
-                    if ok:
-                        conn.sendall(json_response(200, "OK", {
-                            "set": name,
-                            "value": new_val,
-                            "all": toggle_manager.get_all(),
-                        }))
-                    else:
-                        conn.sendall(json_response(400, "Bad Request", {
-                            "error": f"Unknown toggle: {name}",
-                        }))
+            elif (method == "POST" and len(parts) == 3 and parts[0] == "toggle"
+                  and parts[2] in ("on", "off")):
+                name = parts[1]
+                ok, new_val = toggle_manager.set(name, parts[2] == "on")
+                if ok:
+                    conn.sendall(json_response(200, "OK", {
+                        "set": name,
+                        "value": new_val,
+                        "all": toggle_manager.get_all(),
+                    }))
                 else:
-                    conn.sendall(json_response(404, "Not Found", {"error": "Unknown endpoint"}))
+                    conn.sendall(json_response(400, "Bad Request", {
+                        "error": f"Unknown toggle: {name}",
+                        "valid": list(toggle_manager.get_all().keys()),
+                    }))
 
             else:
                 conn.sendall(json_response(404, "Not Found", {"error": "Unknown endpoint"}))
@@ -1135,7 +1282,8 @@ def start_health_check(enabled, port, sensors, server_ip, server_port, conn_hist
             return
         srv.listen(10)
         log(f"Health check: listening on port {port}")
-        log(f"  Endpoints: GET /status, GET /toggles, POST /toggle/<name>, POST /toggle/<name>/on|off")
+        log(f"  Endpoints: GET /status, GET /history, GET /toggles, POST /toggle/<name>, "
+            f"POST /toggle/<name>/on|off")
         while True:
             conn, _ = srv.accept()
             threading.Thread(target=handle_request, args=(conn,), daemon=True).start()
@@ -1216,6 +1364,54 @@ def load_options():
     return defaults
 
 
+def is_local_address(host):
+    """True if `host` is an address of this machine (i.e. we can bind to it)."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind((host, 0))
+        return True
+    except OSError:
+        return False
+
+
+def sanitize_network_opts(opts):
+    """Blank out placeholder or dangerous server/WoL settings in place.
+
+    Returns a list of problems found, for logging.
+    """
+    problems = []
+    server_ip = str(opts.get("plex_server_ip", "")).strip()
+    server_port = int(opts.get("plex_server_port", 32400))
+    listen_port = int(opts.get("listen_port", 32400))
+    if server_ip and server_port == listen_port and is_local_address(server_ip):
+        # 0.0.0.0, 127.x or this host's own IP: every proxied connection would
+        # connect back into the proxy and spawn another, without end
+        problems.append(f"plex_server_ip {server_ip} is this Home Assistant host, so the proxy "
+                        f"would connect to itself — proxying disabled until it's set to the Plex server's IP")
+        server_ip = ""
+    elif not server_ip:
+        problems.append("plex_server_ip is not set — the add-on won't do anything useful")
+    opts["plex_server_ip"] = server_ip
+
+    mac = str(opts.get("target_mac", "")).strip()
+    mac_hex = mac.replace(":", "").replace("-", "").replace(".", "")
+    if mac and (len(mac_hex) != 12 or any(c not in "0123456789abcdefABCDEF" for c in mac_hex)):
+        problems.append(f"target_mac '{mac}' is not a valid MAC address — WoL disabled")
+        mac = ""
+    elif mac and int(mac_hex, 16) == 0:
+        problems.append("target_mac is the 00:00:00:00:00:00 placeholder — WoL disabled")
+        mac = ""
+    opts["target_mac"] = mac
+
+    broadcast = str(opts.get("broadcast", "")).strip()
+    if broadcast in ("", "0.0.0.0"):
+        problems.append("broadcast is not set — using 255.255.255.255 (set your subnet "
+                        "broadcast, e.g. 192.168.1.255, if WoL doesn't reach the server)")
+        broadcast = "255.255.255.255"
+    opts["broadcast"] = broadcast
+    return problems
+
+
 def parse_friendly_names(names_str):
     """Parse 'plexuser:Friendly Name,other:Other Name' into a dict."""
     mapping = {}
@@ -1237,14 +1433,15 @@ def get_friendly_name(plex_user, name_map):
 
 
 def proxy_data(client_sock, upstream_sock):
-    sockets = [client_sock, upstream_sock]
+    # selectors (epoll) rather than select(), which fails on file descriptors >= 1024
+    peers = {client_sock: upstream_sock, upstream_sock: client_sock}
+    sel = selectors.DefaultSelector()
     try:
+        for s in peers:
+            sel.register(s, selectors.EVENT_READ)
         while True:
-            readable, _, errored = select.select(sockets, [], sockets, 30)
-            if errored:
-                break
-            for s in readable:
-                other = upstream_sock if s is client_sock else client_sock
+            for key, _ in sel.select(timeout=30):
+                s = key.fileobj
                 try:
                     data = s.recv(PROXY_BUF)
                 except Exception:
@@ -1252,27 +1449,208 @@ def proxy_data(client_sock, upstream_sock):
                 if not data:
                     return
                 try:
-                    other.sendall(data)
+                    peers[s].sendall(data)
                 except Exception:
                     return
     finally:
-        for s in sockets:
+        sel.close()
+        for s in peers:
             try:
                 s.close()
             except Exception:
                 pass
 
 
-def wait_for_server(ip, port, timeout):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+# ---------------------------------------------------------------------------
+# Waking: readiness check, shared waiter, history
+# ---------------------------------------------------------------------------
+# Wake outcomes
+WAKE_READY = "ready"  # Plex answered /identity
+WAKE_UNVERIFIED = "unverified"  # port open but /identity never answered; proxied anyway
+WAKE_PLEX_NOT_RUNNING = "plex_not_running"  # the PC answered but nothing listens on the Plex port
+WAKE_TIMEOUT = "timeout"  # no answer at all
+WAKE_PROXIED = (WAKE_READY, WAKE_UNVERIFIED)
+
+_insecure_ssl = ssl.create_default_context()
+_insecure_ssl.check_hostname = False  # the plex.direct cert won't match a LAN IP
+_insecure_ssl.verify_mode = ssl.CERT_NONE
+# LAN requests must never go through an HTTP(S)_PROXY from the environment
+_lan_opener = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=_insecure_ssl))
+
+
+def probe_port(ip, port, timeout=2):
+    """'open', 'refused' (the host is awake but nothing is listening) or 'down' (no answer)."""
+    try:
+        socket.create_connection((ip, port), timeout=timeout).close()
+        return "open"
+    except ConnectionRefusedError:
+        return "refused"
+    except OSError:
+        return "down"
+
+
+def plex_identity_ok(ip, port, timeout=3):
+    """True once Plex itself answers, not just its port: GET /identity returns 200."""
+    for scheme in ("https", "http"):
         try:
-            probe = socket.create_connection((ip, port), timeout=2)
-            probe.close()
-            return True
-        except (OSError, ConnectionRefusedError):
-            time.sleep(CONNECT_POLL_INTERVAL)
+            with _lan_opener.open(f"{scheme}://{ip}:{port}/identity", timeout=timeout) as resp:
+                if resp.status == 200:
+                    return True
+        except Exception:
+            continue
     return False
+
+
+def wait_until_ready(ip, port, timeout):
+    """Poll until Plex answers or `timeout` passes. Returns a WAKE_* outcome."""
+    deadline = time.time() + timeout
+    while True:
+        state = probe_port(ip, port)
+        if state == "open" and plex_identity_ok(ip, port):
+            return WAKE_READY
+        if time.time() >= deadline:
+            return {"open": WAKE_UNVERIFIED, "refused": WAKE_PLEX_NOT_RUNNING}.get(state, WAKE_TIMEOUT)
+        time.sleep(CONNECT_POLL_INTERVAL)
+
+
+class WakeHistory:
+    """Persisted record of wake attempts, newest last, exposed via /history and a sensor."""
+
+    HISTORY_FILE = "/data/wake_history.json"
+    MAX_ENTRIES = 100
+    SENSOR_ENTRIES = 5
+
+    def __init__(self, publish):
+        self.publish_enabled = publish
+        self.lock = threading.Lock()
+        self.entries = []
+        try:
+            with open(self.HISTORY_FILE, "r") as f:
+                self.entries = json.load(f).get("wakes", [])[-self.MAX_ENTRIES:]
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            log(f"Wake history: failed to load {self.HISTORY_FILE}: {e}")
+        self._publish()
+
+    def add(self, **fields):
+        """Record a wake attempt. Returns its id, for update()."""
+        with self.lock:
+            entry_id = (self.entries[-1]["id"] + 1) if self.entries else 1
+            self.entries.append(dict(fields, id=entry_id, time=time.strftime("%Y-%m-%d %H:%M:%S")))
+            del self.entries[:-self.MAX_ENTRIES]
+            self._save()
+        self._publish()
+        return entry_id
+
+    def update(self, entry_id, **fields):
+        with self.lock:
+            for entry in self.entries:
+                if entry["id"] == entry_id:
+                    entry.update(fields)
+                    self._save()
+                    break
+        self._publish()
+
+    def get(self, limit=None):
+        """Entries newest first."""
+        with self.lock:
+            entries = [dict(e) for e in reversed(self.entries)]
+        return entries[:limit] if limit else entries
+
+    def _save(self):
+        try:
+            with open(self.HISTORY_FILE, "w") as f:
+                json.dump({"wakes": self.entries}, f, indent=2)
+        except Exception as e:
+            log(f"Wake history: failed to save: {e}")
+
+    def _publish(self):
+        if not self.publish_enabled:
+            return
+        recent = self.get(self.SENSOR_ENTRIES)
+        today = time.strftime("%Y-%m-%d")
+        with self.lock:
+            wakes_today = sum(1 for e in self.entries if e["time"].startswith(today))
+        post_state("sensor.plex_wol_wake_history", recent[0]["outcome"] if recent else "none", {
+            "friendly_name": "Plex WoL Wake History",
+            "icon": "mdi:history",
+            "wakes_today": wakes_today,
+            "recent": recent,
+        })
+
+
+class ServerWaiter:
+    """Waits for the Plex server after a wake, shared by every client that's waiting.
+
+    The first client to wait starts a single probe loop; clients arriving while
+    it runs wait for that result instead of probing on their own. Only that
+    first wait reports the outcome: one status update, one notification, one
+    history entry per wake.
+    """
+
+    def __init__(self, server_ip, server_port, timeout, sensors, history):
+        self.server_ip = server_ip
+        self.server_port = server_port
+        self.timeout = timeout
+        self.sensors = sensors
+        self.history = history
+        self.lock = threading.Lock()
+        self.cycle = None  # the wake currently being waited on
+
+    def wait(self, trigger_ip, wol_sent):
+        """Block until the server is ready or the wake times out.
+
+        Returns (outcome, history entry id); the id is None for clients that
+        joined a wake another client was already waiting on.
+        """
+        with self.lock:
+            cycle = self.cycle
+            first = cycle is None
+            if first:
+                cycle = self.cycle = {"done": threading.Event(), "outcome": WAKE_TIMEOUT}
+        if not first:
+            cycle["done"].wait(self.timeout + 30)
+            return cycle["outcome"], None
+
+        started = time.time()
+        try:
+            cycle["outcome"] = wait_until_ready(self.server_ip, self.server_port, self.timeout)
+        finally:
+            with self.lock:
+                self.cycle = None
+            cycle["done"].set()
+        outcome = cycle["outcome"]
+        return outcome, self._report(outcome, trigger_ip, wol_sent, time.time() - started)
+
+    def _report(self, outcome, trigger_ip, wol_sent, elapsed):
+        server = f"{self.server_ip}:{self.server_port}"
+        if outcome == WAKE_READY:
+            log(f"Wake: Plex ready after {elapsed:.0f}s")
+        elif outcome == WAKE_UNVERIFIED:
+            log(f"Wake: WARNING — port {self.server_port} is open but Plex didn't answer "
+                f"/identity within {self.timeout}s; proxying anyway")
+        elif outcome == WAKE_PLEX_NOT_RUNNING:
+            msg = (f"The Plex server PC at {self.server_ip} is awake, but nothing answered on port "
+                   f"{self.server_port} within {self.timeout}s. Plex Media Server may not be running. "
+                   f"Connection from {trigger_ip} dropped.")
+            log(f"Wake: PLEX NOT RUNNING: {msg}")
+            notify("Plex WoL: Plex not running", msg, "wake_timeout")
+        else:
+            msg = (f"Plex server {server} did not respond within {self.timeout}s"
+                   f"{' after WoL' if wol_sent else ''}. Connection from {trigger_ip} dropped.")
+            log(f"Wake: TIMEOUT: {msg}")
+            notify("Plex WoL: Wake failed", msg, "wake_timeout")
+
+        self.sensors.set_server_status("up" if outcome in WAKE_PROXIED else outcome)
+        return self.history.add(
+            trigger_ip=trigger_ip,
+            wol_sent=wol_sent,
+            outcome=outcome,
+            seconds_to_ready=round(elapsed, 1) if outcome in WAKE_PROXIED else None,
+            user=None,
+        )
 
 
 
@@ -1329,21 +1707,24 @@ def shutdown_handler(signum, frame):
 # ---------------------------------------------------------------------------
 def handle_client(client_sock, addr, opts, wol_state, flood, geoip, allowlist, blocklist,
                   sensors, sleeper, toggle_manager, session_tracker, conn_history, burst_detector,
-                  nowake_list, name_map):
+                  nowake_list, name_map, server_waiter):
     # Track connection
     connection_tracker.add(client_sock)
 
     try:
         _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
                              allowlist, blocklist, sensors, sleeper, toggle_manager, session_tracker,
-                             conn_history, burst_detector, nowake_list, name_map)
+                             conn_history, burst_detector, nowake_list, name_map, server_waiter)
+    except Exception as e:
+        log(f"[{addr}] ERROR handling connection: {e}")
     finally:
         connection_tracker.remove(client_sock)
+        client_sock.close()
 
 
 def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
                          allowlist, blocklist, sensors, sleeper, toggle_manager, session_tracker,
-                         conn_history, burst_detector, nowake_list, name_map):
+                         conn_history, burst_detector, nowake_list, name_map, server_waiter):
     # Flood detection
     flood.record(addr)
 
@@ -1355,8 +1736,7 @@ def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
     # Connection history
     conn_history.record(client_ip)
 
-    # Quiet mode — check toggle or config
-    quiet = toggle_manager.get_quiet() if toggle_manager.enabled else bool(opts.get("enable_quiet_mode", False))
+    quiet = toggle_manager.get_quiet()
 
     # IP blocklist check (before allowlist)
     if blocklist.is_blocked(client_ip):
@@ -1381,7 +1761,9 @@ def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
     wake_timeout = int(opts["wake_timeout_seconds"])
 
     if not server_ip:
-        log(f"[{addr}] No plex_server_ip configured — dropping connection.")
+        if wol_disabled_dedup.should_log("no_server_ip"):
+            log(f"[{addr}] No usable plex_server_ip configured — dropping connections "
+                f"(suppressing repeats for {wol_disabled_dedup.cooldown}s)")
         client_sock.close()
         return
 
@@ -1391,21 +1773,23 @@ def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
 
     user_tag = ""
 
-    # Check if the real server is already up
-    server_already_up = False
+    # Connect straight to the real server; failing that, it's down
     try:
-        probe = socket.create_connection((server_ip, server_port), timeout=2)
-        probe.close()
-        server_already_up = True
-    except (OSError, ConnectionRefusedError):
-        pass
+        upstream = socket.create_connection((server_ip, server_port), timeout=2)
+    except OSError:
+        upstream = None
 
-    if server_already_up:
+    if upstream:
         if not quiet:
             log(f"[{addr}]{user_tag} Server already up — proxying to {server_ip}:{server_port}")
         sensors.set_server_status("up")
         burst_detector.reset()
     else:
+        # Auto-learn: IPs that sent a lone probe and nothing else within the
+        # burst window while the server was down are infrastructure
+        for probe_ip in burst_detector.pop_single_probes():
+            nowake_list.learn(probe_ip)
+
         # No-wake list: proxy when up, silently drop when down
         if nowake_list.should_skip_wol(client_ip):
             client_sock.close()
@@ -1413,30 +1797,29 @@ def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
 
         # Smart WoL: check for connection burst — runs regardless of WoL toggle
         # so that learning always works even in test mode
-        burst_ok = burst_detector.record_and_check()
+        burst_ok = burst_detector.record_and_check(client_ip)
 
         if not burst_ok:
-            count = burst_detector.get_count()
+            count = burst_detector.get_count(client_ip)
             log(f"[{addr}]{user_tag} Server down — background poll ignored by smart WoL "
                 f"({count}/{burst_detector.burst_count} connections in window)")
-            # Auto-learn: single probes while server is down are infrastructure
-            nowake_list.learn(client_ip)
             client_sock.close()
             return
 
         # Check if WoL is enabled via config and dashboard toggle
         wol_config_enabled = bool(opts.get("enable_wol", True))
-        wol_dashboard_enabled = toggle_manager.get_wol() if toggle_manager.enabled else True
+        wol_dashboard_enabled = toggle_manager.get_wol()
         wol_enabled = wol_config_enabled and wol_dashboard_enabled
 
-        sensors.set_server_status("waking")
         now = time.time()
+        wol_sent = False
         with wol_state["lock"]:
             elapsed = now - wol_state["last_wol"]
             if not wol_enabled:
                 reason = "config" if not wol_config_enabled else "dashboard toggle"
                 if wol_disabled_dedup.should_log(client_ip):
                     log(f"[{addr}]{user_tag} Server down — WoL disabled via {reason}, dropping connection (suppressing repeats for {wol_disabled_dedup.cooldown}s)")
+                sensors.set_server_status("down")
                 client_sock.close()
                 return
             elif target_mac and elapsed >= rate_limit:
@@ -1444,6 +1827,7 @@ def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
                 try:
                     send_wol(target_mac, broadcast)
                     wol_state["last_wol"] = now
+                    wol_sent = True
                     sensors.set_last_wake(None)
                 except Exception as e:
                     log(f"[{addr}]{user_tag} ERROR sending WoL: {e}")
@@ -1452,44 +1836,36 @@ def _handle_client_inner(client_sock, addr, opts, wol_state, flood, geoip,
             else:
                 log(f"[{addr}]{user_tag} Server down — WoL rate-limited ({rate_limit - elapsed:.0f}s left)")
 
+        sensors.set_server_status("waking")
         log(f"[{addr}]{user_tag} Waiting up to {wake_timeout}s for server to come up…")
-        if not wait_for_server(server_ip, server_port, wake_timeout):
-            msg = (f"Plex server {server_ip} did not respond within "
-                   f"{wake_timeout}s after WoL. Connection from {client_ip}{user_tag} dropped.")
-            log(f"[{addr}]{user_tag} TIMEOUT: {msg}")
-            sensors.set_server_status("timeout")
-            threading.Thread(
-                target=ha_notify,
-                args=("Plex WoL: Wake failed", msg, "wake_timeout"),
-                daemon=True,
-            ).start()
+        outcome, history_id = server_waiter.wait(client_ip, wol_sent)
+        if outcome not in WAKE_PROXIED:
             client_sock.close()
             return
         log(f"[{addr}]{user_tag} Server is up — proxying.")
-        sensors.set_server_status("up")
         burst_detector.reset()
 
-        # Track who woke the server via session query
-        if session_tracker.enabled:
+        # Track who woke the server via session query (once per wake)
+        if history_id and session_tracker.enabled:
             def _track_wake_user():
                 wake_user = session_tracker.get_wake_user(delay=10)
                 if wake_user:
                     display = get_friendly_name(wake_user, name_map)
                     log(f"[{addr}] Wake triggered by user: {display}")
                     sensors.set_last_wake(display)
-                    threading.Thread(
-                        target=ha_notify,
-                        args=("Plex WoL: Server woken", f"Server woken by {display} from {client_ip}", "server_woken"),
-                        daemon=True,
-                    ).start()
+                    server_waiter.history.update(history_id, user=display)
+                    notify("Plex WoL: Server woken", f"Server woken by {display} from {client_ip}",
+                           "server_woken")
             threading.Thread(target=_track_wake_user, daemon=True).start()
 
-    try:
-        upstream = socket.create_connection((server_ip, server_port), timeout=10)
-    except Exception as e:
-        log(f"[{addr}] Failed to connect to {server_ip}:{server_port}: {e}")
-        client_sock.close()
-        return
+        try:
+            upstream = socket.create_connection((server_ip, server_port), timeout=10)
+        except Exception as e:
+            log(f"[{addr}] Failed to connect to {server_ip}:{server_port}: {e}")
+            client_sock.close()
+            return
+
+    upstream.settimeout(None)  # the connect timeout shouldn't apply to proxied reads/writes
 
     connection_tracker.add(upstream)
 
@@ -1540,50 +1916,43 @@ def main():
         "geoip_block": bool(opts.get("notify_geoip_block", False)),
     }
 
+    ha_worker.start()
+
     # --- Config dependency enforcement ---
-    config_changed = False
+    corrections = {}
 
     # Auto-discover requires no-wake list
     if opts.get("auto_discover_plex_relays") and not opts.get("enable_nowake_list"):
-        opts["enable_nowake_list"] = True
-        config_changed = True
+        corrections["enable_nowake_list"] = True
         log("Config: auto_discover_plex_relays requires enable_nowake_list — auto-enabled")
 
     # Auto-discover requires admin token
     if opts.get("auto_discover_plex_relays") and not opts.get("plex_admin_token"):
-        opts["auto_discover_plex_relays"] = False
-        config_changed = True
+        corrections["auto_discover_plex_relays"] = False
         log("Config: auto_discover_plex_relays requires plex_admin_token — auto-disabled")
 
     # User tracking requires admin token
     if opts.get("enable_user_tracking") and not opts.get("plex_admin_token"):
-        opts["enable_user_tracking"] = False
-        config_changed = True
+        corrections["enable_user_tracking"] = False
         log("Config: enable_user_tracking requires plex_admin_token — auto-disabled")
 
     # Sleep trigger requires SSH user
     if opts.get("enable_sleep_trigger") and not opts.get("server_ssh_user"):
-        opts["enable_sleep_trigger"] = False
-        config_changed = True
+        corrections["enable_sleep_trigger"] = False
         log("Config: enable_sleep_trigger requires server_ssh_user — auto-disabled")
 
+    opts.update(corrections)
+
     # Persist corrected config to Supervisor so UI reflects changes
-    if config_changed and SUPERVISOR_TOKEN:
+    if corrections and SUPERVISOR_TOKEN:
         try:
-            payload = json.dumps({"options": opts}).encode()
-            req = urllib.request.Request(
-                "http://supervisor/addons/self/options",
-                data=payload,
-                headers={
-                    "Authorization": f"Bearer {SUPERVISOR_TOKEN}",
-                    "Content-Type": "application/json",
-                },
-                method="POST",
-            )
-            urllib.request.urlopen(req, timeout=30)
+            update_addon_options(corrections)
             log("Config: corrected settings saved to Supervisor")
         except Exception as e:
             log(f"Config: WARNING — failed to save corrected settings: {e}")
+
+    for problem in sanitize_network_opts(opts):
+        log(f"*** Config: {problem} ***")
 
     log(f"=== Plex WoL Proxy v{VERSION} ===")
     log(f"  Listen:           0.0.0.0:{listen_port}")
@@ -1610,9 +1979,6 @@ def main():
     log(f"  Quiet mode:       {'ON' if opts.get('enable_quiet_mode') else 'OFF'}")
     log(f"  Notify target:    {NOTIFY_TARGET or '(persistent only)'}")
     log(f"  HA API token:     {'present' if SUPERVISOR_TOKEN else 'MISSING'}")
-
-    if not opts.get("plex_server_ip"):
-        log("*** WARNING: plex_server_ip is not set. The add-on won't do anything useful. ***")
 
     # Initialize all modules
     wol_state = {"last_wol": 0.0, "lock": threading.Lock()}
@@ -1662,6 +2028,14 @@ def main():
 
     conn_history = ConnectionHistory(bool(opts.get("enable_ha_sensors", True)))
 
+    server_waiter = ServerWaiter(
+        server_ip=str(opts.get("plex_server_ip", "")),
+        server_port=int(opts.get("plex_server_port", 32400)),
+        timeout=int(opts.get("wake_timeout_seconds", 120)),
+        sensors=sensors,
+        history=WakeHistory(bool(opts.get("enable_ha_sensors", True))),
+    )
+
     session_tracker = PlexSessionTracker(
         enabled=bool(opts.get("enable_user_tracking", False)),
         server_ip=str(opts.get("plex_server_ip", "")),
@@ -1673,6 +2047,7 @@ def main():
         enabled=bool(opts.get("enable_smart_wol", False)),
         burst_count=int(opts.get("smart_wol_burst_count", 3)),
         burst_window=int(opts.get("smart_wol_burst_window", 15)),
+        wake_timeout=int(opts.get("wake_timeout_seconds", 120)),
     )
 
     name_map = parse_friendly_names(str(opts.get("user_friendly_names", "")))
@@ -1697,6 +2072,7 @@ def main():
         int(opts.get("plex_server_port", 32400)),
         conn_history,
         toggle_manager,
+        server_waiter.history,
     )
 
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -1715,7 +2091,7 @@ def main():
             target=handle_client,
             args=(client_sock, addr, opts, wol_state, flood, geoip, allowlist, blocklist,
                   sensors, sleeper, toggle_manager, session_tracker, conn_history, burst_detector,
-                  nowake_list, name_map),
+                  nowake_list, name_map, server_waiter),
             daemon=True,
         )
         t.start()

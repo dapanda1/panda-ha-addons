@@ -1,5 +1,28 @@
 # Changelog
 
+## 5.5.0
+
+### Fixes
+- **Smart WoL no longer blocks real users.** The first connection of a remote user's app launch was learned as "infrastructure", so the rest of their burst was dropped and the server never woke for that IP again. Bursts are now counted per IP, and an IP is only learned after its single probe's window passes with no follow-up connection. If a remote user's IP was learned by mistake in an earlier version, add it to `allow_ip_plex_relay` to remove it.
+- **`POST /toggle/<name>/on|off` works.** These endpoints returned `400 Unknown toggle`; only flipping worked.
+- **Config changes now override saved dashboard toggles.** Once `toggles.json` existed, turning `enable_geoip` or `enable_quiet_mode` off in the config had no effect. A dashboard change still persists across restarts until you change the matching config option.
+- **The proxy can no longer connect to itself.** The shipped default `plex_server_ip` of `0.0.0.0` made one connection spawn thousands of threads. A server IP that belongs to the HA host (on the same port) is now refused with a clear log message, and the placeholder defaults are gone. A `00:00:00:00:00:00` MAC now disables WoL, and a `0.0.0.0` broadcast falls back to `255.255.255.255`.
+- **No more crash above ~500 simultaneous connections.** The proxy used `select()`, which fails on file descriptors above 1023.
+- **Home Assistant calls no longer delay Plex connections.** Each connection waited on up to three HA API calls (10s timeout each). Sensor updates and notifications now run in the background, and rapid updates to one sensor are combined.
+- **Learned-IP sync no longer undoes config changes.** It posted back the options from when the add-on started, reverting anything saved since. It now updates only its own field on top of your current options, at most once a minute.
+- **Config migration can actually rename fields.** It read `/data/options.json`, from which the Supervisor strips old keys, so renames like `nowake_exclude` → `allow_ip_plex_relay` never saw the old value. It now reads your saved options from the Supervisor.
+- **One wake, one notification.** Every waiting client used to send its own "Wake failed" (and on success, its own user lookup and "Server woken" notification).
+- **Server status no longer sticks on `waking`** when WoL is disabled; it now reads `down`.
+- **GeoIP failures no longer let blocked countries through.** A failed or rate-limited ipapi.co lookup was cached as "allowed" for 24 hours.
+- The health check port no longer sends `Access-Control-Allow-Origin: *`, and refuses POSTs sent from web browsers, so a web page can't read status or flip toggles. `rest_command` is unaffected.
+
+### New
+- **Wake readiness check:** after a wake, waits for Plex itself to answer (`/identity`) instead of just the port opening. A separate **"Plex not running"** notification is sent when the PC wakes but Plex Media Server isn't running.
+- **Wake history:** every wake attempt is recorded (time, trigger IP, WoL sent, outcome, seconds to ready, Plex user) in `/data/wake_history.json`, available at `GET /history`, as `last_wake_outcome` in `/status`, and as `sensor.plex_wol_wake_history`.
+- **Offline GeoIP:** replaced ipapi.co with the bundled DB-IP Lite country database. No rate limits, no external requests, instant lookups. CGNAT/Tailscale addresses are treated as local.
+- **CIDR ranges** in `ip_allowlist`, `ip_blocklist` and `nowake_list` (e.g. `198.51.100.0/24`).
+- Unit test suite in `tests/`.
+
 ## 5.4.9
 - Added per-notification toggles: `notify_wake_timeout`, `notify_flood`, `notify_server_slept`, `notify_server_woken`, `notify_geoip_block`. Each can be independently enabled/disabled from the config page.
 - Added new GeoIP block notification — sends an alert when a connection is blocked by country. Default off to avoid noise from port scanners.
